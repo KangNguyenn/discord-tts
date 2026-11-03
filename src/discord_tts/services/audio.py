@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ctypes.util
 import logging
-import tempfile
 import wave
 from pathlib import Path
 
@@ -66,8 +65,6 @@ class WavPCMAudio(discord.AudioSource):
         self.channels = self._channels
         self.sample_width = self._sample_width
         self.sample_rate = self._sample_rate
-        self._read_count = 0
-        self._logged_eof = False
         logger.info(
             "Opening WAV for Discord playback: path=%s channels=%d sample_width=%d "
             "sample_rate=%d frames=%d duration=%.3fs",
@@ -86,12 +83,6 @@ class WavPCMAudio(discord.AudioSource):
     def read(self) -> bytes:
         raw = self._wav.readframes(self._input_frames)
         if not raw:
-            if not self._logged_eof:
-                logger.info(
-                    "WAV PCM stream reached EOF after %d packets (path=%s)",
-                    self._read_count, self._path,
-                )
-                self._logged_eof = True
             return b""
 
         if self._sample_width == 1:
@@ -120,16 +111,6 @@ class WavPCMAudio(discord.AudioSource):
         pcm = np.clip(resampled, -32768, 32767).astype("<i2")
         stereo = np.repeat(pcm[:, np.newaxis], 2, axis=1)
         packet = stereo.tobytes()
-        self._read_count += 1
-        if self._read_count <= 2:
-            pcm_float = pcm.astype(np.float32)
-            rms = float(np.sqrt(np.mean(np.square(pcm_float))))
-            logger.debug(
-                "Generated PCM packet %d: %d bytes (expected 3840), "
-                "sample_min=%d sample_max=%d rms=%.1f",
-                self._read_count, len(packet),
-                int(pcm.min()), int(pcm.max()), rms,
-            )
         return packet
 
     def is_opus(self) -> bool:
@@ -138,62 +119,6 @@ class WavPCMAudio(discord.AudioSource):
     def cleanup(self) -> None:
         try:
             self._wav.close()
-            logger.debug("Closed WAV source after %d PCM packets", self._read_count)
+            logger.debug("Closed WAV source: %s", self._path)
         except Exception:
             logger.exception("Failed to close WAV source")
-
-
-def convert_wav_to_discord_pcm_wav(path: Path) -> Path:
-    """Convert a Piper WAV into the exact PCM packets used by Discord playback.
-
-    The returned WAV can be played locally to isolate resampling/formatting from
-    Discord's voice transport and Opus encryption.
-    """
-    source = WavPCMAudio(path)
-    output_file = tempfile.NamedTemporaryFile(
-        prefix="discord-tts-pcm-preview-", suffix=".wav", delete=False
-    )
-    output_path = Path(output_file.name)
-    output_file.close()
-
-    packet_count = 0
-    sample_count = 0
-    sum_squares = 0.0
-    peak = 0
-    sample_min = 32767
-    sample_max = -32768
-    try:
-        with wave.open(str(output_path), "wb") as wav_file:
-            wav_file.setnchannels(2)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(WavPCMAudio.OUTPUT_RATE)
-            while True:
-                packet = source.read()
-                if not packet:
-                    break
-                wav_file.writeframesraw(packet)
-                samples = np.frombuffer(packet, dtype="<i2").astype(np.float64)
-                if samples.size:
-                    packet_count += 1
-                    sample_count += int(samples.size)
-                    sum_squares += float(np.dot(samples, samples))
-                    peak = max(peak, int(np.max(np.abs(samples))))
-                    sample_min = min(sample_min, int(samples.min()))
-                    sample_max = max(sample_max, int(samples.max()))
-
-        if packet_count == 0:
-            raise ValueError("WAV không chứa dữ liệu âm thanh PCM.")
-        rms = float(np.sqrt(sum_squares / sample_count)) if sample_count else 0.0
-        logger.info(
-            "Discord PCM conversion summary: path=%s packets=%d duration=%.3fs "
-            "sample_min=%d sample_max=%d peak=%d rms=%.1f",
-            output_path, packet_count,
-            (sample_count / 2) / WavPCMAudio.OUTPUT_RATE,
-            sample_min, sample_max, peak, rms,
-        )
-        return output_path
-    except Exception:
-        output_path.unlink(missing_ok=True)
-        raise
-    finally:
-        source.cleanup()
