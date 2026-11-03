@@ -17,7 +17,7 @@ A local-first Linux desktop app for controlling a Discord TTS bot. The UI is wri
 
 ## Important setup notes
 
-This is an initial source MVP, not yet a signed/release-ready Flatpak. Discord voice requires discord.py 2.7.1+ with its voice extras (PyNaCl and DAVE support) and the Opus shared library. WAV-to-PCM conversion is handled in-app, so no FFmpeg subprocess is needed. Bot permissions must include Connect, Speak, View Channels, Send Messages (for commands), and application-command access. Enable Message Content Intent in Discord Developer Portal only if you want to read normal text-channel messages.
+This is an initial source MVP, not yet a signed/release-ready Flatpak. Discord voice requires discord.py 2.7.1+ with its voice extras (PyNaCl and DAVE support) and the Opus shared library. WAV-to-PCM conversion is handled in-app, so no FFmpeg subprocess is needed. Bot permissions must include View Channels, Connect, and Speak for voice playback, plus Read Message History for text-channel reading. Enable Message Content Intent in Discord Developer Portal to read normal text-channel messages. The app does not register slash or prefix commands.
 
 The Discord bot must be invited to the server you intend to use. For safety, normal text messages are not read until you explicitly allow one or more text channels in Settings.
 
@@ -100,7 +100,7 @@ GTK4 main thread
           |
           v
 Discord asyncio thread (discord.py)
-  ├── Gateway / slash commands / voice
+  ├── Gateway / text-channel reader / voice
   └── SpeechController (interrupts previous generation)
           |
           v
@@ -115,5 +115,4 @@ JSON config: per-context model/speaker settings + Discord Bot Token
 - Discord message reading uses one configured model/speaker because the sender cannot choose a voice for another person's message. App chat can choose any installed model. The legacy `/tts`, `!tts`, and Quick Chat language options continue to map Vietnamese/English to their configured default model IDs.
 - The Settings UI exposes speed and volume. Pitch-shifting and per-user voice profiles are not implemented yet.
 - System-tray support is StatusNotifierItem-based. A tray watcher/extension is required; close-to-hide and launcher reactivation are fallbacks.
-- Slash commands are synced globally. Discord may take time to make new global commands visible.
 - This project has not yet been runtime-tested against a live Discord server in this build environment.

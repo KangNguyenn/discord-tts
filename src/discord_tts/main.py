@@ -39,8 +39,6 @@ class DiscordTTSApplication(Gtk.Application):
             token = self.config.discord_token.strip()
             if token:
                 self.window._start_discord(token)
-            else:
-                self.window._show_token_dialog()
         self._present_window()
 
     def _make_simple_action(self, name, callback):
