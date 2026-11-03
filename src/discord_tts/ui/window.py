@@ -11,19 +11,17 @@ from gi.repository import Gdk, Gio, GLib, Gtk
 from discord_tts.config import APP_NAME, AppConfig, DATA_DIR, HISTORY_DB
 from discord_tts.services.discord_service import DiscordService
 from discord_tts.storage.database import Database
-from discord_tts.storage.secrets import SecretStore, SecretStoreError
 from discord_tts.tts.engine import PiperEngine
 
 
 class MainWindow(Gtk.ApplicationWindow):
     def __init__(self, app: Gtk.Application, config: AppConfig, database: Database,
-                 engine: PiperEngine, secrets: SecretStore):
+                 engine: PiperEngine):
         super().__init__(application=app, title=APP_NAME)
         self.app = app
         self.config = config
         self.database = database
         self.engine = engine
-        self.secrets = secrets
         self.discord: DiscordService | None = None
         self.guilds: dict[int, dict] = {}
         self.voice_channels: list[dict] = []
@@ -325,16 +323,51 @@ class MainWindow(Gtk.ApplicationWindow):
             self.quick_box.remove(child)
             child = next_child
         for item in self.database.quick_messages():
-            button = Gtk.Button(label=item["title"])
-            button.add_css_class("quick-button")
-            button.set_tooltip_text(item["text"])
-            button.connect("clicked", self._on_quick_clicked, item["text"], item["language"])
-            self.quick_box.append(button)
+            chip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+            chip.add_css_class("quick-chip")
+
+            speak_button = Gtk.Button(label=item["title"])
+            speak_button.add_css_class("quick-button")
+            speak_button.set_tooltip_text(item["text"])
+            speak_button.connect(
+                "clicked", self._on_quick_clicked, item["text"], item["language"]
+            )
+            chip.append(speak_button)
+
+            delete_button = Gtk.Button.new_from_icon_name("user-trash-symbolic")
+            delete_button.add_css_class("flat")
+            delete_button.set_tooltip_text(f"Xóa Quick Chat: {item['title']}")
+            delete_button.connect(
+                "clicked", self._delete_quick_chat, item["id"], item["title"]
+            )
+            chip.append(delete_button)
+            self.quick_box.append(chip)
 
     def _on_quick_clicked(self, _button, text: str, language: str) -> None:
         self.language_dropdown.set_selected(1 if language == "en" else 0)
         self.input_view.get_buffer().set_text(text)
         self._send_message()
+
+    def _delete_quick_chat(self, _button, quick_id: int, title: str) -> None:
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            modal=True,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.NONE,
+            text=f"Xóa Quick Chat “{title}”?",
+        )
+        dialog.set_secondary_text("Shortcut này sẽ bị xóa khỏi danh sách.")
+        dialog.add_button("Hủy", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Xóa", Gtk.ResponseType.OK)
+
+        def on_response(_dialog, response):
+            if response == Gtk.ResponseType.OK:
+                self.database.delete_quick_message(quick_id)
+                self._load_quick_chat()
+            dialog.destroy()
+
+        dialog.connect("response", on_response)
+        dialog.present()
 
     def _add_quick_chat(self, *_args) -> None:
         dialog = Gtk.Dialog(title="New Quick Chat", transient_for=self, modal=True)
@@ -469,11 +502,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self.discord.leave_voice()
 
     def _connect_bot(self, *_args) -> None:
-        try:
-            token = self.secrets.get_token()
-        except SecretStoreError as exc:
-            self._append_bubble(str(exc), "system", "vi", "Security")
-            return
+        token = self.config.discord_token.strip()
         if not token:
             self._show_token_dialog()
             return
@@ -502,28 +531,37 @@ class MainWindow(Gtk.ApplicationWindow):
         content.set_margin_start(14)
         content.set_margin_end(14)
         explanation = Gtk.Label(
-            label="Dán Bot Token từ Discord Developer Portal. Token sẽ được lưu trong Linux Secret Service, không ghi vào file cấu hình."
+            label=(
+                "Dán Bot Token từ Discord Developer Portal. Token được lưu cục bộ "
+                "trong config.json của ứng dụng; không cần GNOME Keyring hay Secret Service."
+            )
         )
         explanation.set_wrap(True)
         explanation.set_xalign(0)
         token_entry = Gtk.PasswordEntry()
         token_entry.set_placeholder_text("Discord Bot Token")
         token_entry.set_show_peek_icon(True)
+        token_entry.set_text(self.config.discord_token)
         content.append(explanation)
         content.append(token_entry)
 
         def on_response(_dialog, response):
             if response == Gtk.ResponseType.OK:
-                try:
-                    new_token = token_entry.get_text().strip()
-                    self.secrets.set_token(new_token)
-                    if self.discord and self.discord.is_running:
-                        self.discord.shutdown()
-                        self.discord = None
-                    self._start_discord(new_token)
-                except SecretStoreError as exc:
-                    self._append_bubble(str(exc), "system", "vi", "Security")
+                new_token = token_entry.get_text().strip()
+                if not new_token:
+                    self._append_bubble(
+                        "Bot Token không được để trống.", "system", "vi", "System"
+                    )
+                    dialog.destroy()
+                    return
+                self.config.discord_token = new_token
+                self.config.save()
+                if self.discord and self.discord.is_running:
+                    self.discord.shutdown()
+                    self.discord = None
+                self._start_discord(new_token)
             dialog.destroy()
+
         dialog.connect("response", on_response)
         dialog.present()
 
