@@ -93,6 +93,10 @@ class Database:
                 (title, text, language, position),
             )
 
+    def delete_quick_message(self, quick_id: int) -> None:
+        with self._connect() as db:
+            db.execute("DELETE FROM quick_messages WHERE id = ?", (quick_id,))
+
     def find_quick_message(self, title: str):
         with self._connect() as db:
             return db.execute(
