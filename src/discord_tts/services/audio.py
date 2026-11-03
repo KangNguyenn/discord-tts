@@ -1,10 +1,39 @@
 from __future__ import annotations
 
+import ctypes.util
 import wave
 from pathlib import Path
 
 import discord
 import numpy as np
+
+
+def ensure_opus_loaded() -> None:
+    """Load libopus explicitly before sending PCM audio through discord.py."""
+    if discord.opus.is_loaded():
+        return
+
+    candidates = []
+    discovered = ctypes.util.find_library("opus")
+    if discovered:
+        candidates.append(discovered)
+    # Common Linux SONAMEs; keep these as fallbacks for minimal environments.
+    candidates.extend(("libopus.so.0", "libopus.so"))
+
+    errors = []
+    for library in dict.fromkeys(candidates):
+        try:
+            discord.opus.load_opus(library)
+            return
+        except Exception as exc:
+            errors.append(f"{library}: {exc}")
+
+    details = "; ".join(errors) if errors else "ctypes.util.find_library('opus') không tìm thấy thư viện."
+    raise RuntimeError(
+        "Không tìm thấy hoặc không tải được libopus nên Discord không thể phát PCM audio. "
+        "Trên CachyOS/Arch, chạy: sudo pacman -S --needed opus. "
+        f"Chi tiết: {details}"
+    )
 
 
 class WavPCMAudio(discord.AudioSource):
