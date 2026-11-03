@@ -1,5 +1,7 @@
 import json
 
+from discord_tts import config as config_module
+from discord_tts.config import AppConfig
 from discord_tts.tts.engine import PiperEngine
 
 
@@ -30,8 +32,7 @@ def test_discovers_local_model_and_reads_metadata(tmp_path):
         },
     )
 
-    engine = PiperEngine(voice_dir)
-    models = engine.list_models()
+    models = PiperEngine(voice_dir).list_models()
 
     assert len(models) == 1
     model = models[0]
@@ -72,9 +73,7 @@ def test_ignores_models_without_matching_metadata(tmp_path):
     (voice_dir / "invalid-json.onnx").write_bytes(b"placeholder")
     (voice_dir / "invalid-json.onnx.json").write_text("{", encoding="utf-8")
 
-    engine = PiperEngine(voice_dir)
-
-    assert engine.list_models() == []
+    assert PiperEngine(voice_dir).list_models() == []
 
 
 def test_multi_speaker_map_fills_unnamed_ids(tmp_path):
@@ -97,3 +96,20 @@ def test_multi_speaker_map_fills_unnamed_ids(tmp_path):
         ("Speaker 1", 1),
         ("third", 2),
     )
+
+
+def test_old_config_migrates_discord_language_to_model(tmp_path, monkeypatch):
+    monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path)
+    (tmp_path / "config.json").write_text(
+        json.dumps({
+            "discord_incoming_language": "en",
+            "voice_en": "custom-English-model",
+        }),
+        encoding="utf-8",
+    )
+
+    config = AppConfig.load()
+
+    assert config.discord_voice_model == "custom-English-model"
+    assert config.discord_speaker_id == 0
+    assert config.app_voice_model == "vi_VN-vais1000-medium"
