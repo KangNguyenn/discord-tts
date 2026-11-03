@@ -191,6 +191,12 @@ class SpeechController:
                 )
                 self.event_callback("speech_error", {"source": source, "message": message})
                 return
+            udp_connection = getattr(voice_client, "_connection", None)
+            udp_stats = getattr(udp_connection, "_discord_tts_udp_stats", None)
+            udp_start_sent = udp_stats["sent_packets"] if udp_stats is not None else 0
+            udp_start_bytes = udp_stats["sent_bytes"] if udp_stats is not None else 0
+            udp_start_dropped = udp_stats["dropped_packets"] if udp_stats is not None else 0
+
             loop = asyncio.get_running_loop()
             finished: asyncio.Future[None] = loop.create_future()
 
@@ -228,6 +234,25 @@ class SpeechController:
             except asyncio.CancelledError:
                 voice_client.stop()
                 raise
+
+            if udp_stats is not None:
+                logger.info(
+                    "Discord voice UDP playback summary: generation=%d "
+                    "audio_packets_read=%d udp_packets_sent=%d udp_bytes_sent=%d "
+                    "udp_packets_dropped=%d last_udp_error=%s",
+                    generation, audio._read_count,
+                    udp_stats["sent_packets"] - udp_start_sent,
+                    udp_stats["sent_bytes"] - udp_start_bytes,
+                    udp_stats["dropped_packets"] - udp_start_dropped,
+                    udp_stats["last_error"],
+                )
+            else:
+                logger.warning(
+                    "Discord voice UDP playback summary unavailable: "
+                    "UDP diagnostics were not installed (generation=%d)",
+                    generation,
+                )
+
             if generation == self._generation:
                 self.event_callback("speech_finished", {"source": source, "text": text})
         except asyncio.CancelledError:
