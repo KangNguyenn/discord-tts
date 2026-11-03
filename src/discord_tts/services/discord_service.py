@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
-import math
-import struct
 import threading
 from typing import Callable
 
@@ -41,7 +39,6 @@ class DiscordService:
         self.thread: threading.Thread | None = None
         self._token: str | None = None
         self._stopping = threading.Event()
-        self._ready = threading.Event()
         self._guilds: dict[int, discord.Guild] = {}
 
     @property
@@ -55,7 +52,6 @@ class DiscordService:
         logger.info("Starting Discord bot worker thread")
         self._token = token
         self._stopping.clear()
-        self._ready.clear()
         self.thread = threading.Thread(
             target=self._thread_main, name="discord-asyncio", daemon=True
         )
@@ -95,7 +91,6 @@ class DiscordService:
             self.loop = None
             self.bot = None
             self.speech = None
-            self._ready.clear()
             if self._stopping.is_set():
                 self.event_callback("disconnected", {"message": "Bot đã dừng."})
 
@@ -272,7 +267,6 @@ class DiscordService:
             if ctx.guild and self.speech:
                 self.speech.submit(text, lang, ctx.guild.id, "prefix")
 
-        self._ready.set()
         try:
             await bot.start(self._token, reconnect=True)
         finally:
@@ -310,212 +304,6 @@ class DiscordService:
         guild = self.bot.get_guild(guild_id or self.config.guild_id or 0)
         return guild.voice_client if guild else None
 
-    def _instrument_voice_dave(self, voice_client: discord.VoiceClient) -> None:
-        """Log DAVE negotiation without exposing MLS payloads or voice tokens."""
-        websocket = getattr(voice_client, "ws", None)
-        connection = getattr(voice_client, "_connection", None)
-        if websocket is None or connection is None:
-            logger.warning("Cannot instrument DAVE: voice websocket or connection is missing")
-            return
-        if getattr(websocket, "_discord_tts_dave_instrumented", False):
-            return
-
-        def log_state(stage: str, opcode: int | None = None) -> None:
-            session = getattr(connection, "dave_session", None)
-            try:
-                can_encrypt = connection.can_encrypt
-            except Exception:
-                can_encrypt = "unavailable"
-            logger.info(
-                "Voice DAVE state: stage=%s opcode=%s protocol_version=%s "
-                "session_exists=%s session_ready=%s can_encrypt=%s pending_transitions=%s",
-                stage, opcode, getattr(connection, "dave_protocol_version", None),
-                session is not None, getattr(session, "ready", None),
-                can_encrypt, getattr(connection, "dave_pending_transitions", None),
-            )
-
-        original_received_message = websocket.received_message
-        original_received_binary_message = websocket.received_binary_message
-        original_send_binary = websocket.send_binary
-
-        async def observed_received_message(message: dict) -> None:
-            opcode = message.get("op")
-            if opcode in (4, 21, 22, 24):
-                logger.info(
-                    "Voice DAVE gateway event received: opcode=%s data_keys=%s",
-                    opcode,
-                    sorted(message.get("d", {}).keys()) if isinstance(message.get("d"), dict) else [],
-                )
-                log_state("before-json-event", opcode)
-            try:
-                await original_received_message(message)
-            except Exception:
-                logger.exception("Voice DAVE JSON event handler failed: opcode=%s", opcode)
-                raise
-            if opcode in (4, 21, 22, 24):
-                log_state("after-json-event", opcode)
-
-        async def observed_received_binary_message(message: bytes) -> None:
-            opcode = message[2] if len(message) >= 3 else None
-            if opcode in (25, 27, 29, 30, 31):
-                logger.info(
-                    "Voice DAVE binary event received: opcode=%s bytes=%d",
-                    opcode, len(message),
-                )
-                log_state("before-binary-event", opcode)
-            try:
-                await original_received_binary_message(message)
-            except Exception:
-                logger.exception("Voice DAVE binary event handler failed: opcode=%s", opcode)
-                raise
-            if opcode in (25, 27, 29, 30, 31):
-                log_state("after-binary-event", opcode)
-
-        async def observed_send_binary(opcode: int, payload: bytes) -> None:
-            if opcode in (26, 28, 31):
-                logger.info(
-                    "Voice DAVE binary frame sent: opcode=%s payload_bytes=%d",
-                    opcode, len(payload),
-                )
-            await original_send_binary(opcode, payload)
-
-        websocket.received_message = observed_received_message
-        websocket.received_binary_message = observed_received_binary_message
-        websocket.send_binary = observed_send_binary
-        websocket._discord_tts_dave_instrumented = True
-        logger.info(
-            "Installed voice DAVE diagnostics: channel=%s endpoint=%s",
-            getattr(voice_client.channel, "name", None), voice_client.endpoint,
-        )
-        log_state("instrumentation-installed")
-
-    def _instrument_voice_udp(self, voice_client: discord.VoiceClient) -> None:
-        """Log whether RTP audio packets are accepted by the local UDP socket."""
-        connection = getattr(voice_client, "_connection", None)
-        if connection is None:
-            logger.warning("Cannot instrument voice UDP: voice connection state is missing")
-            return
-        if getattr(connection, "_discord_tts_udp_instrumented", False):
-            return
-
-        original_send_packet = connection.send_packet
-        original_get_voice_packet = voice_client._get_voice_packet
-        packet_diagnostics = {"count": 0, "opus_decoder": None}
-
-        def observed_get_voice_packet(opus_data: bytes) -> bytes:
-            packet_diagnostics["count"] += 1
-            packet_number = packet_diagnostics["count"]
-            dave_session = getattr(connection, "dave_session", None)
-            dave_protocol_version = getattr(connection, "dave_protocol_version", None)
-            dave_ready = getattr(dave_session, "ready", None)
-            try:
-                dave_can_encrypt = connection.can_encrypt
-            except Exception:
-                dave_can_encrypt = "unavailable"
-
-            if packet_number <= 3:
-                try:
-                    decoder = packet_diagnostics["opus_decoder"]
-                    if decoder is None:
-                        decoder = discord.opus.Decoder()
-                        packet_diagnostics["opus_decoder"] = decoder
-                    opus_frames = discord.opus.Decoder.packet_get_nb_frames(opus_data)
-                    opus_samples_per_frame = discord.opus.Decoder.packet_get_samples_per_frame(opus_data)
-                    decoded_pcm = decoder.decode(opus_data)
-                    decoded_sample_count = len(decoded_pcm) // 2
-                    decoded_rms = (
-                        math.sqrt(
-                            sum(sample * sample for (sample,) in struct.iter_unpack("<h", decoded_pcm))
-                            / decoded_sample_count
-                        )
-                        if decoded_sample_count else 0.0
-                    )
-                    logger.info(
-                        "Voice Opus self-check: packet=%d opus_bytes=%d opus_head=%s "
-                        "frames=%d samples_per_frame=%d decoded_bytes=%d decoded_rms=%.1f",
-                        packet_number, len(opus_data), opus_data[:8].hex(),
-                        opus_frames, opus_samples_per_frame, len(decoded_pcm), decoded_rms,
-                    )
-                except Exception:
-                    logger.exception(
-                        "Voice Opus self-check failed: packet=%d opus_bytes=%d",
-                        packet_number, len(opus_data),
-                    )
-
-            packet = original_get_voice_packet(opus_data)
-            if packet_number <= 3:
-                try:
-                    rtp_sequence = struct.unpack(">H", packet[2:4])[0]
-                    rtp_timestamp = struct.unpack(">I", packet[4:8])[0]
-                    rtp_ssrc = struct.unpack(">I", packet[8:12])[0]
-                    logger.info(
-                        "Voice RTP packet prepared: packet=%d bytes=%d version=%d "
-                        "payload_type=%d sequence=%d timestamp=%d ssrc=%d "
-                        "dave_protocol_version=%s dave_session=%s dave_ready=%s "
-                        "dave_can_encrypt=%s mode=%s",
-                        packet_number, len(packet), packet[0] >> 6, packet[1] & 0x7F,
-                        rtp_sequence, rtp_timestamp, rtp_ssrc,
-                        dave_protocol_version, dave_session is not None, dave_ready,
-                        dave_can_encrypt, voice_client.mode,
-                    )
-                except Exception:
-                    logger.exception("Could not inspect prepared voice RTP packet")
-            return packet
-
-        voice_client._get_voice_packet = observed_get_voice_packet
-
-        stats = {
-            "sent_packets": 0,
-            "sent_bytes": 0,
-            "dropped_packets": 0,
-            "last_error": None,
-        }
-
-        def observed_send_packet(packet: bytes) -> None:
-            try:
-                original_send_packet(packet)
-            except OSError as exc:
-                stats["dropped_packets"] += 1
-                stats["last_error"] = repr(exc)
-                logger.error(
-                    "Voice UDP packet send failed: packet=%d bytes=%d error=%r",
-                    stats["sent_packets"] + stats["dropped_packets"],
-                    len(packet), exc,
-                )
-                raise
-
-            stats["sent_packets"] += 1
-            stats["sent_bytes"] += len(packet)
-            if stats["sent_packets"] <= 2:
-                try:
-                    peer = connection.socket.getpeername()
-                except OSError as exc:
-                    peer = f"unavailable: {exc}"
-                try:
-                    local = connection.socket.getsockname()
-                except OSError as exc:
-                    local = f"unavailable: {exc}"
-                logger.info(
-                    "Voice UDP packet accepted by local socket: packet=%d bytes=%d "
-                    "local=%s peer=%s",
-                    stats["sent_packets"], len(packet), local, peer,
-                )
-            elif stats["sent_packets"] % 50 == 0:
-                logger.debug(
-                    "Voice UDP progress: sent_packets=%d sent_bytes=%d dropped_packets=%d",
-                    stats["sent_packets"], stats["sent_bytes"], stats["dropped_packets"],
-                )
-
-        connection.send_packet = observed_send_packet
-        connection._discord_tts_udp_stats = stats
-        connection._discord_tts_udp_instrumented = True
-        self._instrument_voice_dave(voice_client)
-        logger.info(
-            "Installed voice UDP diagnostics: channel=%s endpoint=%s mode=%s",
-            getattr(voice_client.channel, "name", None),
-            voice_client.endpoint, voice_client.mode,
-        )
-
     async def _join_channel(self, channel: discord.VoiceChannel | discord.StageChannel) -> discord.VoiceClient:
         logger.info(
             "Joining voice channel: guild=%s (%s), channel=%s (%s)",
@@ -524,13 +312,10 @@ class DiscordService:
         existing = channel.guild.voice_client
         if existing and existing.is_connected():
             if existing.channel and existing.channel.id == channel.id:
-                self._instrument_voice_udp(existing)
                 return existing
             await existing.move_to(channel)
-            self._instrument_voice_udp(existing)
             return existing
         voice_client = await channel.connect()
-        self._instrument_voice_udp(voice_client)
         logger.info(
             "Voice connect completed: connected=%s channel=%s voice_client=%r",
             voice_client.is_connected(), getattr(voice_client.channel, "name", None), voice_client,
