@@ -807,7 +807,13 @@ class MainWindow(Gtk.ApplicationWindow):
         selected_model = {"id": ""}
         speaker_states: dict[str, dict[str, int]] = {}
         speaker_rows: dict[str, Gtk.Widget] = {}
-        speaker_dropdowns: dict[str, Gtk.DropDown] = {}
+        preview_status = Gtk.Label(label="Nhấn nút Play để nghe thử model.")
+        preview_status.set_wrap(True)
+        preview_status.set_xalign(0)
+        preview_status.add_css_class("dim-label")
+        preview_stop_button = Gtk.Button.new_from_icon_name("media-playback-stop-symbolic")
+        preview_stop_button.set_tooltip_text("Dừng nghe thử")
+        preview_stop_button.set_sensitive(False)
 
         if not models:
             empty = Gtk.Label(
@@ -879,13 +885,9 @@ class MainWindow(Gtk.ApplicationWindow):
                 play_button.set_tooltip_text("Nghe thử model và speaker này")
                 play_button.connect(
                     "clicked", self._preview_voice_model,
-                    model, speaker_state, preview_status_placeholder := Gtk.Label(),
-                    stop_placeholder := Gtk.Button.new_from_icon_name("media-playback-stop-symbolic"),
+                    model, speaker_state, preview_status, preview_stop_button,
                     self.config.tts_speed, self.config.tts_volume,
                 )
-                # The shared preview controls are added below; all row play buttons
-                # point to the same status and stop controls.
-                play_button.set_sensitive(True)
                 top_row.append(radio)
                 top_row.append(details)
                 top_row.append(play_button)
@@ -917,7 +919,6 @@ class MainWindow(Gtk.ApplicationWindow):
                         ),
                     )
                     speaker_row.append(dropdown)
-                    speaker_dropdowns[model.model_id] = dropdown
                 else:
                     speaker_row.append(Gtk.Label(label="Chỉ có một speaker"))
                 speaker_row.set_visible(
@@ -949,38 +950,11 @@ class MainWindow(Gtk.ApplicationWindow):
             scroll.set_child(rows_box)
             content.append(scroll)
 
-        preview_status = Gtk.Label(label="Nhấn nút Play để nghe thử model.")
-        preview_status.set_wrap(True)
-        preview_status.set_xalign(0)
-        preview_status.add_css_class("dim-label")
         preview_controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        preview_controls.append(preview_status)
         preview_status.set_hexpand(True)
-        preview_stop_button = Gtk.Button.new_from_icon_name("media-playback-stop-symbolic")
-        preview_stop_button.set_tooltip_text("Dừng nghe thử")
-        preview_stop_button.set_sensitive(False)
+        preview_controls.append(preview_status)
         preview_controls.append(preview_stop_button)
         content.append(preview_controls)
-
-        # Connect row preview buttons after building shared controls.
-        if models:
-            child = rows_box.get_first_child()
-            index = 0
-            while child:
-                if isinstance(child, Gtk.Box) and child.get_first_child() is not None:
-                    top_row = child.get_first_child()
-                    # The last child in each model row is its Play button.
-                    play_button = top_row.get_last_child()
-                    model = models[index]
-                    state = speaker_states[model.model_id]
-                    play_button.disconnect_by_func(self._preview_voice_model) if False else None
-                    play_button.connect(
-                        "clicked", self._preview_voice_model,
-                        model, state, preview_status, preview_stop_button,
-                        self.config.tts_speed, self.config.tts_volume,
-                    )
-                    index += 1
-                child = child.get_next_sibling()
 
         preview_stop_button.connect(
             "clicked", self._stop_tts_preview_from_settings, preview_status
