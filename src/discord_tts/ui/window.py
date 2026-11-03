@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import logging
+import threading
 
 import gi
 
@@ -12,6 +14,9 @@ from discord_tts.config import APP_NAME, AppConfig, DATA_DIR, HISTORY_DB
 from discord_tts.services.discord_service import DiscordService
 from discord_tts.storage.database import Database
 from discord_tts.tts.engine import PiperEngine
+
+
+logger = logging.getLogger(__name__)
 
 
 class MainWindow(Gtk.ApplicationWindow):
@@ -27,6 +32,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self.voice_channels: list[dict] = []
         self._loading_dropdowns = False
         self._settings_checks: dict[int, Gtk.CheckButton] = {}
+        self._preview_generation = 0
+        self._preview_media: Gtk.MediaFile | None = None
+        self._preview_path: Path | None = None
+        self._preview_button: Gtk.Button | None = None
+        self._preview_status: Gtk.Label | None = None
 
         self.set_default_size(760, 760)
         self.set_size_request(560, 600)
@@ -603,7 +613,7 @@ class MainWindow(Gtk.ApplicationWindow):
         content.set_margin_bottom(14)
         content.set_margin_start(14)
         content.set_margin_end(14)
-        content.set_size_request(440, 420)
+        content.set_size_request(480, 640)
 
         section = Gtk.Label(label="Discord message reader")
         section.add_css_class("heading")
@@ -656,6 +666,54 @@ class MainWindow(Gtk.ApplicationWindow):
         info.add_css_class("dim-label")
         content.append(info)
 
+        content.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        preview_section = Gtk.Label(label="TTS preview")
+        preview_section.add_css_class("heading")
+        preview_section.set_xalign(0)
+        content.append(preview_section)
+        preview_note = Gtk.Label(
+            label="Tạo giọng nói bằng Piper rồi phát trực tiếp trên máy. "
+                  "Bước này không gửi âm thanh tới Discord."
+        )
+        preview_note.set_wrap(True)
+        preview_note.set_xalign(0)
+        preview_note.add_css_class("dim-label")
+        content.append(preview_note)
+
+        preview_text = Gtk.Entry()
+        preview_text.set_placeholder_text("Nhập câu để nghe thử…")
+        preview_text.set_text("Xin chào! Đây là giọng đọc thử.")
+        content.append(preview_text)
+
+        preview_controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        preview_language = Gtk.DropDown.new_from_strings(["Tiếng Việt", "English"])
+        preview_language.set_selected(0)
+        preview_language.set_hexpand(True)
+        preview_button = Gtk.Button(label="Nghe thử")
+        preview_button.set_icon_name("audio-volume-high-symbolic")
+        preview_button.add_css_class("suggested-action")
+        preview_stop_button = Gtk.Button(label="Dừng")
+        preview_stop_button.set_icon_name("media-playback-stop-symbolic")
+        preview_stop_button.set_sensitive(False)
+        preview_controls.append(preview_language)
+        preview_controls.append(preview_button)
+        preview_controls.append(preview_stop_button)
+        content.append(preview_controls)
+
+        preview_status = Gtk.Label(label="Chọn ngôn ngữ và nhấn Nghe thử.")
+        preview_status.set_wrap(True)
+        preview_status.set_xalign(0)
+        preview_status.add_css_class("dim-label")
+        content.append(preview_status)
+
+        preview_button.connect(
+            "clicked", self._preview_tts,
+            preview_text, preview_language, speed_scale, volume_scale,
+        )
+        preview_stop_button.connect(
+            "clicked", self._stop_tts_preview_from_settings, preview_status,
+        )
+
         download_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         download_vi = Gtk.Button(label="Tải voice VI")
         download_en = Gtk.Button(label="Tải voice EN")
@@ -670,6 +728,7 @@ class MainWindow(Gtk.ApplicationWindow):
         content.append(download_status)
 
         def save_settings(_dialog, _response):
+            self._stop_tts_preview()
             selected_channels = [channel_id for channel_id, check in self._settings_checks.items() if check.get_active()]
             self.config.discord_incoming_language = "en" if lang.get_selected() == 1 else "vi"
             self.config.read_text_channel_ids = selected_channels
@@ -696,6 +755,150 @@ class MainWindow(Gtk.ApplicationWindow):
         scale.connect("value-changed", lambda widget: value_label.set_text(f"{widget.get_value():.2f}{suffix}"))
         return row, scale
 
+    def _preview_tts(
+        self,
+        button: Gtk.Button,
+        text_entry: Gtk.Entry,
+        language_dropdown: Gtk.DropDown,
+        speed_scale: Gtk.Scale,
+        volume_scale: Gtk.Scale,
+    ) -> None:
+        text = text_entry.get_text().strip()
+        if not text:
+            self._preview_status.set_text("Hãy nhập nội dung cần nghe thử.")
+            return
+
+        # A preview only synthesizes and plays a local WAV; it never contacts Discord.
+        self._stop_tts_preview()
+        generation = self._preview_generation
+        language = "en" if language_dropdown.get_selected() == 1 else "vi"
+        speed = speed_scale.get_value()
+        volume = volume_scale.get_value()
+        self._preview_button = button
+        self._preview_status.set_text(
+            f"Đang tổng hợp bằng model {self.engine.model_id(language)}…"
+        )
+        button.set_sensitive(False)
+
+        def worker() -> None:
+            wav_path: Path | None = None
+            try:
+                wav_path = self.engine.synthesize(text, language, speed, volume)
+                logger.info(
+                    "TTS preview synthesized: generation=%d language=%s model=%s "
+                    "wav=%s size=%d",
+                    generation, language, self.engine.model_id(language), wav_path,
+                    wav_path.stat().st_size if wav_path.exists() else -1,
+                )
+                GLib.idle_add(self._start_tts_preview, generation, wav_path)
+            except Exception as exc:
+                logger.exception("TTS preview synthesis failed (generation=%d)", generation)
+                if wav_path:
+                    wav_path.unlink(missing_ok=True)
+                GLib.idle_add(self._tts_preview_failed, generation, str(exc))
+
+        threading.Thread(target=worker, name="tts-preview", daemon=True).start()
+
+    def _start_tts_preview(self, generation: int, wav_path: Path) -> bool:
+        if generation != self._preview_generation or self._preview_button is None:
+            wav_path.unlink(missing_ok=True)
+            return GLib.SOURCE_REMOVE
+
+        try:
+            media = Gtk.MediaFile.new_for_filename(str(wav_path))
+            media.set_loop(False)
+            media.connect("notify::prepared", self._on_tts_preview_prepared, generation)
+            media.connect("notify::error", self._on_tts_preview_error, generation)
+            media.connect("notify::ended", self._on_tts_preview_ended, generation)
+            self._preview_media = media
+            self._preview_path = wav_path
+            media.play()
+            self._preview_status.set_text(
+                "Đã tạo WAV. Đang phát trực tiếp qua thiết bị âm thanh của máy…"
+            )
+            logger.info(
+                "TTS preview playback started: generation=%d path=%s",
+                generation, wav_path,
+            )
+        except Exception as exc:
+            logger.exception("Could not start local TTS preview (generation=%d)", generation)
+            self._finish_tts_preview(generation, f"Không phát được preview: {exc}")
+        return GLib.SOURCE_REMOVE
+
+    def _on_tts_preview_prepared(self, media, _pspec, generation: int) -> None:
+        if generation != self._preview_generation or media is not self._preview_media:
+            return
+        error = media.get_error()
+        if error is not None:
+            self._finish_tts_preview(generation, f"Lỗi audio backend: {error}")
+        elif not media.has_audio():
+            self._finish_tts_preview(
+                generation, "File WAV đã tạo nhưng GTK không nhận diện được track âm thanh."
+            )
+        else:
+            self._preview_status.set_text(
+                "Model đã tạo WAV có audio; đang thử phát qua âm thanh hệ thống."
+            )
+
+    def _on_tts_preview_error(self, media, _pspec, generation: int) -> None:
+        if generation != self._preview_generation or media is not self._preview_media:
+            return
+        error = media.get_error()
+        if error is not None:
+            logger.error("Local TTS preview playback failed: %s", error)
+            self._finish_tts_preview(generation, f"Không phát được preview: {error}")
+
+    def _on_tts_preview_ended(self, media, _pspec, generation: int) -> None:
+        if (
+            generation == self._preview_generation
+            and media is self._preview_media
+            and media.get_ended()
+        ):
+            self._finish_tts_preview(generation, "Nghe thử hoàn tất.")
+
+    def _finish_tts_preview(self, generation: int, message: str) -> None:
+        if generation != self._preview_generation:
+            return
+        # Invalidate callbacks before clearing the stream, which can emit notifications.
+        self._preview_generation += 1
+        media, self._preview_media = self._preview_media, None
+        path, self._preview_path = self._preview_path, None
+        button, self._preview_button = self._preview_button, None
+        if media is not None:
+            try:
+                media.pause()
+                media.clear()
+            except Exception:
+                logger.exception("Failed to release local TTS preview media")
+        if path is not None:
+            path.unlink(missing_ok=True)
+        if button is not None:
+            button.set_sensitive(True)
+        if self._preview_status is not None:
+            self._preview_status.set_text(message)
+        self._preview_status = None
+
+    def _stop_tts_preview(self) -> None:
+        self._preview_generation += 1
+        media, self._preview_media = self._preview_media, None
+        path, self._preview_path = self._preview_path, None
+        button, self._preview_button = self._preview_button, None
+        if media is not None:
+            try:
+                media.pause()
+                media.clear()
+            except Exception:
+                logger.exception("Failed to stop local TTS preview")
+        if path is not None:
+            path.unlink(missing_ok=True)
+        if button is not None:
+            button.set_sensitive(True)
+        self._preview_status = None
+
+    def _stop_tts_preview_from_settings(self, _button, status_label: Gtk.Label) -> None:
+        self._stop_tts_preview()
+        status_label.set_text("Đã dừng nghe thử.")
+
     def _download_voice(self, _button, language: str, status_label: Gtk.Label) -> None:
         status_label.set_text(f"Đang tải model {language.upper()}…")
 
@@ -710,7 +913,6 @@ class MainWindow(Gtk.ApplicationWindow):
             GLib.idle_add(status_label.set_text, message)
             if ok:
                 GLib.idle_add(self.footer_status.set_text, message)
-        import threading
         threading.Thread(target=worker, daemon=True).start()
 
     def _notify(self, title: str, body: str) -> None:
