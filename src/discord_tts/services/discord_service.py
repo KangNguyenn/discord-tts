@@ -310,6 +310,85 @@ class DiscordService:
         guild = self.bot.get_guild(guild_id or self.config.guild_id or 0)
         return guild.voice_client if guild else None
 
+    def _instrument_voice_dave(self, voice_client: discord.VoiceClient) -> None:
+        """Log DAVE negotiation without exposing MLS payloads or voice tokens."""
+        websocket = getattr(voice_client, "ws", None)
+        connection = getattr(voice_client, "_connection", None)
+        if websocket is None or connection is None:
+            logger.warning("Cannot instrument DAVE: voice websocket or connection is missing")
+            return
+        if getattr(websocket, "_discord_tts_dave_instrumented", False):
+            return
+
+        def log_state(stage: str, opcode: int | None = None) -> None:
+            session = getattr(connection, "dave_session", None)
+            try:
+                can_encrypt = connection.can_encrypt
+            except Exception:
+                can_encrypt = "unavailable"
+            logger.info(
+                "Voice DAVE state: stage=%s opcode=%s protocol_version=%s "
+                "session_exists=%s session_ready=%s can_encrypt=%s pending_transitions=%s",
+                stage, opcode, getattr(connection, "dave_protocol_version", None),
+                session is not None, getattr(session, "ready", None),
+                can_encrypt, getattr(connection, "dave_pending_transitions", None),
+            )
+
+        original_received_message = websocket.received_message
+        original_received_binary_message = websocket.received_binary_message
+        original_send_binary = websocket.send_binary
+
+        async def observed_received_message(message: dict) -> None:
+            opcode = message.get("op")
+            if opcode in (4, 21, 22, 24):
+                logger.info(
+                    "Voice DAVE gateway event received: opcode=%s data_keys=%s",
+                    opcode,
+                    sorted(message.get("d", {}).keys()) if isinstance(message.get("d"), dict) else [],
+                )
+                log_state("before-json-event", opcode)
+            try:
+                await original_received_message(message)
+            except Exception:
+                logger.exception("Voice DAVE JSON event handler failed: opcode=%s", opcode)
+                raise
+            if opcode in (4, 21, 22, 24):
+                log_state("after-json-event", opcode)
+
+        async def observed_received_binary_message(message: bytes) -> None:
+            opcode = message[2] if len(message) >= 3 else None
+            if opcode in (25, 27, 29, 30, 31):
+                logger.info(
+                    "Voice DAVE binary event received: opcode=%s bytes=%d",
+                    opcode, len(message),
+                )
+                log_state("before-binary-event", opcode)
+            try:
+                await original_received_binary_message(message)
+            except Exception:
+                logger.exception("Voice DAVE binary event handler failed: opcode=%s", opcode)
+                raise
+            if opcode in (25, 27, 29, 30, 31):
+                log_state("after-binary-event", opcode)
+
+        async def observed_send_binary(opcode: int, payload: bytes) -> None:
+            if opcode in (26, 28, 31):
+                logger.info(
+                    "Voice DAVE binary frame sent: opcode=%s payload_bytes=%d",
+                    opcode, len(payload),
+                )
+            await original_send_binary(opcode, payload)
+
+        websocket.received_message = observed_received_message
+        websocket.received_binary_message = observed_received_binary_message
+        websocket.send_binary = observed_send_binary
+        websocket._discord_tts_dave_instrumented = True
+        logger.info(
+            "Installed voice DAVE diagnostics: channel=%s endpoint=%s",
+            getattr(voice_client.channel, "name", None), voice_client.endpoint,
+        )
+        log_state("instrumentation-installed")
+
     def _instrument_voice_udp(self, voice_client: discord.VoiceClient) -> None:
         """Log whether RTP audio packets are accepted by the local UDP socket."""
         connection = getattr(voice_client, "_connection", None)
@@ -430,6 +509,7 @@ class DiscordService:
         connection.send_packet = observed_send_packet
         connection._discord_tts_udp_stats = stats
         connection._discord_tts_udp_instrumented = True
+        self._instrument_voice_dave(voice_client)
         logger.info(
             "Installed voice UDP diagnostics: channel=%s endpoint=%s mode=%s",
             getattr(voice_client.channel, "name", None),
