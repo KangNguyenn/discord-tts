@@ -34,6 +34,65 @@ class SpeechController:
         self._generation = 0
         self._tasks: set[asyncio.Task] = set()
 
+    def _voice_playback_diagnostics(
+        self, voice_client: discord.VoiceClient, generation: int
+    ) -> list[str]:
+        """Inspect Discord-side permission and mute state before sending audio."""
+        channel = voice_client.channel
+        guild = voice_client.guild
+        member = guild.me
+        if channel is None or member is None:
+            logger.warning(
+                "Voice diagnostics unavailable: generation=%d channel=%r guild_member=%r",
+                generation, channel, member,
+            )
+            return []
+
+        permissions = channel.permissions_for(member)
+        state = member.voice
+        flags = {
+            "view_channel": permissions.view_channel,
+            "connect": permissions.connect,
+            "speak": permissions.speak,
+            "server_muted": bool(state and state.mute),
+            "self_muted": bool(state and state.self_mute),
+            "server_deafened": bool(state and state.deaf),
+            "self_deafened": bool(state and state.self_deaf),
+            "suppressed": bool(state and state.suppress),
+        }
+        logger.info(
+            "Discord voice diagnostics: generation=%d guild=%s channel=%s "
+            "endpoint=%s encryption_mode=%s latency=%s average_latency=%s "
+            "view_channel=%s connect=%s speak=%s server_muted=%s self_muted=%s "
+            "server_deafened=%s self_deafened=%s suppressed=%s",
+            generation, guild.id, channel.name,
+            voice_client.endpoint, voice_client.mode,
+            voice_client.latency, voice_client.average_latency,
+            flags["view_channel"], flags["connect"], flags["speak"],
+            flags["server_muted"], flags["self_muted"],
+            flags["server_deafened"], flags["self_deafened"], flags["suppressed"],
+        )
+
+        problems = []
+        if not permissions.speak:
+            problems.append(
+                "Bot không có quyền Speak trong voice channel này. "
+                "Hãy cấp quyền Speak cho role của bot."
+            )
+        if state and state.mute:
+            problems.append(
+                "Bot đang bị server mute trong Discord. Hãy unmute bot."
+            )
+        if state and state.self_mute:
+            problems.append(
+                "Bot đang self-mute trong Discord."
+            )
+        if state and state.suppress:
+            problems.append(
+                "Bot đang bị suppress trong Stage channel; cần cấp quyền Speaker."
+            )
+        return problems
+
     def submit(self, text: str, language: str, guild_id: int | None, source: str) -> None:
         """Must be called on the Discord asyncio loop."""
         self._generation += 1
@@ -122,6 +181,16 @@ class SpeechController:
                 getattr(getattr(voice_client, "channel", None), "name", None),
                 getattr(voice_client, "latency", None),
             )
+
+            voice_problems = self._voice_playback_diagnostics(voice_client, generation)
+            if voice_problems:
+                message = " ".join(voice_problems)
+                logger.error(
+                    "Discord voice preflight failed (generation=%d): %s",
+                    generation, message,
+                )
+                self.event_callback("speech_error", {"source": source, "message": message})
+                return
             loop = asyncio.get_running_loop()
             finished: asyncio.Future[None] = loop.create_future()
 
