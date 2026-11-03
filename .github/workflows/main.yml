@@ -41,7 +41,7 @@ jobs:
             --runtime=org.gnome.Sdk//50 \
             --requirements-file=requirements.txt \
             --output=python3-dependencies \
-            --prefer-wheels=numpy,onnxruntime,piper-phonemize,PyNaCl,cffi,cryptography,davey \
+            --prefer-wheels=numpy,onnxruntime,piper-phonemize,PyNaCl,cffi,cryptography,davey,piper-tts \
             --wheel-arches=x86_64
 
       - name: Build Flatpak bundle
