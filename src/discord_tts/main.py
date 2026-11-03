@@ -109,7 +109,7 @@ def main() -> int:
     _configure_logging()
     logger = logging.getLogger("discord_tts")
     logger.info("Starting Discord TTS")
-    logger.info("Python: %s", sys.version.replace("\\n", " "))
+    logger.info("Python: %s", sys.version.replace("\n", " "))
     logger.info("Console logging configured (set DISCORD_TTS_LOG_LEVEL to change verbosity)")
     app = DiscordTTSApplication()
     return app.run(sys.argv)
