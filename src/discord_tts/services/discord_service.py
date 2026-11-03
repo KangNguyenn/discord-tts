@@ -100,7 +100,10 @@ class DiscordService:
         intents.messages = True
         intents.message_content = True
 
-        bot = discord.Client(intents=intents)
+        initial_status, initial_activity = self._presence_values()
+        bot = discord.Client(
+            intents=intents, status=initial_status, activity=initial_activity
+        )
         command_tree = app_commands.CommandTree(bot)
         self.bot = bot
         logger.info(
@@ -135,7 +138,6 @@ class DiscordService:
                 await command_tree.sync()
             except Exception as exc:
                 logger.warning("Could not clear previously registered Discord commands: %s", exc)
-            await self._apply_presence()
 
         @bot.event
         async def on_disconnect() -> None:
@@ -328,10 +330,7 @@ class DiscordService:
         if self.loop and self.is_running:
             self._submit(self._apply_presence())
 
-    async def _apply_presence(self) -> None:
-        if not self.bot or not self.bot.is_ready():
-            return
-
+    def _presence_values(self):
         statuses = {
             "online": discord.Status.online,
             "idle": discord.Status.idle,
@@ -353,9 +352,16 @@ class DiscordService:
             if stream_url:
                 activity = discord.Streaming(name=activity_name, url=stream_url)
         else:
-            activity_type = activity_types.get(activity_kind, discord.ActivityType.listening)
+            activity_type = activity_types.get(
+                activity_kind, discord.ActivityType.listening
+            )
             activity = discord.Activity(type=activity_type, name=activity_name)
+        return status, activity
 
+    async def _apply_presence(self) -> None:
+        if not self.bot or not self.bot.is_ready():
+            return
+        status, activity = self._presence_values()
         await self.bot.change_presence(status=status, activity=activity)
 
     def _publish_guilds_threadsafe(self) -> None:

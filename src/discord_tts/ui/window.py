@@ -422,7 +422,7 @@ class MainWindow(Gtk.ApplicationWindow):
         content.set_margin_start(14)
         content.set_margin_end(14)
         message = Gtk.Label(
-            label=f"Xóa Quick Chat “{title}”?\\nShortcut này sẽ bị xóa khỏi danh sách."
+            label=f"Xóa Quick Chat “{title}”?\nShortcut này sẽ bị xóa khỏi danh sách."
         )
         message.set_wrap(True)
         message.set_xalign(0)
