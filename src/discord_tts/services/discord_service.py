@@ -379,9 +379,9 @@ class DiscordService:
             if existing.channel and existing.channel.id == channel.id:
                 self._instrument_voice_udp(existing)
                 return existing
-            moved = await existing.move_to(channel)
-            self._instrument_voice_udp(moved)
-            return moved
+            await existing.move_to(channel)
+            self._instrument_voice_udp(existing)
+            return existing
         voice_client = await channel.connect()
         self._instrument_voice_udp(voice_client)
         logger.info(
