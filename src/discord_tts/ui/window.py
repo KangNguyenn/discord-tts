@@ -10,7 +10,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gdk, Gio, GLib, Gtk
 
-from discord_tts.config import APP_NAME, AppConfig, DATA_DIR, HISTORY_DB, VOICE_DIR
+from discord_tts.config import APP_NAME, AppConfig, VoiceProfile, VOICE_DIR
 from discord_tts.services.discord_service import DiscordService
 from discord_tts.storage.database import Database
 from discord_tts.tts.engine import PiperEngine
@@ -78,10 +78,6 @@ class MainWindow(Gtk.ApplicationWindow):
         settings_button.set_tooltip_text("Settings")
         settings_button.connect("clicked", self._open_settings)
         header.pack_end(settings_button)
-        token_button = Gtk.Button.new_from_icon_name("dialog-password-symbolic")
-        token_button.set_tooltip_text("Thay Bot Token")
-        token_button.connect("clicked", self._change_token)
-        header.pack_end(token_button)
         menu_model = Gio.Menu.new()
         menu_model.append("Settings", "app.settings")
         menu_model.append("Quit", "app.quit")
@@ -191,11 +187,17 @@ class MainWindow(Gtk.ApplicationWindow):
         lang_label = Gtk.Label(label="Voice")
         lang_label.add_css_class("dim-label")
         top_row.append(lang_label)
-        self.app_voice_button = Gtk.Button(label=self._voice_button_label(self.config.app_voice_model))
+        self.app_voice_button = Gtk.Button(
+            label=self._voice_button_label(self.config.direct_chat.model_id)
+        )
         self.app_voice_button.set_icon_name("pan-down-symbolic")
-        self.app_voice_button.set_tooltip_text("Chọn voice model và speaker")
+        self.app_voice_button.set_tooltip_text("Chọn model, speaker, speed và volume cho Direct Chat")
         self.app_voice_button.connect(
-            "clicked", self._open_voice_picker, "app", self.app_voice_button
+            "clicked",
+            lambda button: self._open_voice_picker(
+                button, self.config.direct_chat,
+                lambda profile: self._save_profile(self.config.direct_chat, profile),
+            ),
         )
         top_row.append(self.app_voice_button)
         top_row.append(Gtk.Label(label="· Enter để gửi · Shift+Enter xuống dòng"))
@@ -277,16 +279,22 @@ class MainWindow(Gtk.ApplicationWindow):
         text = self._input_text().strip()
         if not text:
             return
-        model_id = self.engine.model_id(self.config.app_voice_model)
+        profile = self.config.direct_chat
+        model_id = self.engine.model_id(profile.model_id)
         language = self.engine.language_code(model_id)
         self._append_bubble(text, "outgoing", language, "You")
         self.database.add_history("outgoing", "app", language, text)
         self.input_view.get_buffer().set_text("")
         if not self.discord:
-            self._append_bubble("Discord bot chưa được cấu hình.", "system", language, "System")
+            self._append_bubble(
+                "Discord bot chưa được kết nối.", "system", language, "System"
+            )
             return
-        self.discord.speak(text, model_id, self.config.app_speaker_id, "app")
+        self.discord.speak(
+            text, model_id, profile.speaker_id, profile.speed, profile.volume, "app"
+        )
         self.input_view.grab_focus()
+
 
     def _append_bubble(self, text: str, direction: str, language: str, author: str, timestamp: str | None = None) -> None:
         row = Gtk.ListBoxRow()
@@ -334,17 +342,41 @@ class MainWindow(Gtk.ApplicationWindow):
             next_child = child.get_next_sibling()
             self.quick_box.remove(child)
             child = next_child
-        for item in self.database.quick_messages():
-            chip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+
+        for row in self.database.quick_messages():
+            item = dict(row)
+            chip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=3)
             chip.add_css_class("quick-chip")
 
-            speak_button = Gtk.Button(label=item["title"])
-            speak_button.add_css_class("quick-button")
-            speak_button.set_tooltip_text(item["text"])
-            speak_button.connect(
-                "clicked", self._on_quick_clicked, item["text"], item["language"]
+            item_button = Gtk.Button(label=item["title"])
+            item_button.add_css_class("quick-button")
+            item_button.set_tooltip_text(item["text"])
+            item_button.connect("clicked", self._on_quick_clicked, item)
+            chip.append(item_button)
+
+            model = self.engine.get_model(item["model_id"])
+            model_name = model.display_name if model else f"Missing: {item['model_id']}"
+            speaker_name = (
+                model.speaker_name(int(item["speaker_id"]))
+                if model and model.num_speakers > 1 else "Speaker 0"
             )
-            chip.append(speak_button)
+            profile_label = Gtk.Label(
+                label=f"{model_name} · {speaker_name} · "
+                      f"{float(item['speed']):.2f}× · {float(item['volume']):.2f}×"
+            )
+            profile_label.add_css_class("dim-label")
+            profile_label.set_ellipsize(3)
+            profile_label.set_max_width_chars(30)
+            profile_label.set_tooltip_text(
+                f"{model_name} · {speaker_name} · speed {item['speed']} · volume {item['volume']}"
+            )
+            chip.append(profile_label)
+
+            edit_button = Gtk.Button.new_from_icon_name("document-edit-symbolic")
+            edit_button.add_css_class("flat")
+            edit_button.set_tooltip_text(f"Sửa Quick Chat: {item['title']}")
+            edit_button.connect("clicked", self._edit_quick_chat, item)
+            chip.append(edit_button)
 
             delete_button = Gtk.Button.new_from_icon_name("user-trash-symbolic")
             delete_button.add_css_class("flat")
@@ -355,21 +387,35 @@ class MainWindow(Gtk.ApplicationWindow):
             chip.append(delete_button)
             self.quick_box.append(chip)
 
-    def _on_quick_clicked(self, _button, text: str, language: str) -> None:
-        legacy_model = self.config.voice_en if language == "en" else self.config.voice_vi
-        self.config.app_voice_model = self.engine.model_id(legacy_model)
-        self.config.app_speaker_id = 0
-        self.config.save()
-        self.app_voice_button.set_label(self._voice_button_label(self.config.app_voice_model))
-        self.input_view.get_buffer().set_text(text)
-        self._send_message()
+    def _on_quick_clicked(self, _button, item: dict) -> None:
+        text = item["text"].strip()
+        if not text:
+            return
+        model_id = self.engine.model_id(item["model_id"])
+        language = self.engine.language_code(model_id)
+        profile = VoiceProfile(
+            model_id=model_id,
+            speaker_id=int(item["speaker_id"]),
+            speed=float(item["speed"]),
+            volume=float(item["volume"]),
+        )
+        self._append_bubble(text, "outgoing", language, item["title"])
+        self.database.add_history("outgoing", "quick", language, text)
+        if not self.discord:
+            self._append_bubble(
+                "Discord bot chưa được kết nối.", "system", language, "System"
+            )
+            return
+        # Quick Chat speaks with its own profile and never changes Direct Chat.
+        self.discord.speak(
+            text, profile.model_id, profile.speaker_id,
+            profile.speed, profile.volume, "quick",
+        )
 
     def _delete_quick_chat(self, _button, quick_id: int, title: str) -> None:
-        # Gtk.MessageDialog.set_secondary_text() is not available in GTK4.
         dialog = Gtk.Dialog(title="Xóa Quick Chat", transient_for=self, modal=True)
         dialog.add_button("Hủy", Gtk.ResponseType.CANCEL)
         dialog.add_button("Xóa", Gtk.ResponseType.OK)
-
         content = dialog.get_content_area()
         content.set_spacing(8)
         content.set_margin_top(14)
@@ -377,7 +423,7 @@ class MainWindow(Gtk.ApplicationWindow):
         content.set_margin_start(14)
         content.set_margin_end(14)
         message = Gtk.Label(
-            label=f"Xóa Quick Chat “{title}”?\nShortcut này sẽ bị xóa khỏi danh sách."
+            label=f"Xóa Quick Chat “{title}”?\\nShortcut này sẽ bị xóa khỏi danh sách."
         )
         message.set_wrap(True)
         message.set_xalign(0)
@@ -393,30 +439,142 @@ class MainWindow(Gtk.ApplicationWindow):
         dialog.present()
 
     def _add_quick_chat(self, *_args) -> None:
-        dialog = Gtk.Dialog(title="New Quick Chat", transient_for=self, modal=True)
-        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        dialog.add_button("Add", Gtk.ResponseType.OK)
+        self._open_quick_chat_dialog()
+
+    def _edit_quick_chat(self, _button, item: dict) -> None:
+        self._open_quick_chat_dialog(item)
+
+    def _open_quick_chat_dialog(self, item: dict | None = None) -> None:
+        editing = item is not None
+        dialog = Gtk.Dialog(
+            title="Chỉnh sửa Quick Chat" if editing else "Tạo Quick Chat",
+            transient_for=self,
+            modal=True,
+        )
+        dialog.add_button("Hủy", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Lưu thay đổi" if editing else "Tạo Quick Chat", Gtk.ResponseType.OK)
+
         content = dialog.get_content_area()
-        content.set_spacing(8)
-        content.set_margin_top(12)
-        content.set_margin_bottom(12)
-        content.set_margin_start(12)
-        content.set_margin_end(12)
-        title_entry = Gtk.Entry(placeholder_text="Tên nút, ví dụ: Hello")
-        text_entry = Gtk.Entry(placeholder_text="Câu sẽ được đọc")
-        language = Gtk.DropDown.new_from_strings(["Tiếng Việt", "English"])
+        content.set_spacing(9)
+        content.set_margin_top(14)
+        content.set_margin_bottom(14)
+        content.set_margin_start(14)
+        content.set_margin_end(14)
+
+        title_label = Gtk.Label(label="Tên Quick Chat")
+        title_label.set_xalign(0)
+        title_entry = Gtk.Entry(placeholder_text="Ví dụ: Hello")
+        title_entry.set_text(item["title"] if item else "")
+        content.append(title_label)
         content.append(title_entry)
-        content.append(text_entry)
-        content.append(language)
+
+        text_label = Gtk.Label(label="Nội dung nói")
+        text_label.set_xalign(0)
+        text_view = Gtk.TextView()
+        text_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        text_view.set_size_request(-1, 96)
+        if item:
+            text_view.get_buffer().set_text(item["text"])
+        text_scroll = Gtk.ScrolledWindow()
+        text_scroll.set_min_content_height(96)
+        text_scroll.set_child(text_view)
+        content.append(text_label)
+        content.append(text_scroll)
+
+        profile = (
+            VoiceProfile(
+                model_id=item["model_id"],
+                speaker_id=int(item["speaker_id"]),
+                speed=float(item["speed"]),
+                volume=float(item["volume"]),
+            )
+            if item else self.config.direct_chat.copy()
+        )
+        model_label = Gtk.Label(label="Voice Model")
+        model_label.set_xalign(0)
+        model_button = Gtk.Button(label=self._voice_button_label(profile.model_id))
+        model_button.set_icon_name("pan-down-symbolic")
+        model_button.set_hexpand(True)
+        model_button.set_tooltip_text("Chọn model, speaker, speed và volume cho Quick Chat")
+        model_button.connect(
+            "clicked",
+            lambda button: self._open_voice_picker(
+                button, profile,
+                lambda updated: self._copy_profile_to_button(profile, updated, model_button),
+            ),
+        )
+        content.append(model_label)
+        content.append(model_button)
+        profile_note = Gtk.Label(
+            label="Mặc định sao chép cấu hình Direct Chat tại thời điểm tạo. "
+                  "Sau khi lưu, profile này hoạt động độc lập."
+        )
+        profile_note.set_wrap(True)
+        profile_note.set_xalign(0)
+        profile_note.add_css_class("dim-label")
+        content.append(profile_note)
 
         def on_response(_dialog, response):
-            if response == Gtk.ResponseType.OK and title_entry.get_text().strip() and text_entry.get_text().strip():
-                lang = "en" if language.get_selected() == 1 else "vi"
-                self.database.add_quick_message(title_entry.get_text().strip(), text_entry.get_text().strip(), lang)
-                self._load_quick_chat()
+            if response == Gtk.ResponseType.OK:
+                title = title_entry.get_text().strip()
+                start, end = text_view.get_buffer().get_bounds()
+                text = text_view.get_buffer().get_text(start, end, True).strip()
+                if not title or not text:
+                    self._append_bubble(
+                        "Tên và nội dung Quick Chat không được để trống.",
+                        "system", "vi", "System",
+                    )
+                else:
+                    if editing:
+                        self.database.update_quick_message(
+                            int(item["id"]), title, text, profile.model_id,
+                            profile.speaker_id, profile.speed, profile.volume,
+                        )
+                    else:
+                        self.database.add_quick_message(
+                            title, text, profile.model_id,
+                            profile.speaker_id, profile.speed, profile.volume,
+                        )
+                    self._load_quick_chat()
             dialog.destroy()
+
         dialog.connect("response", on_response)
         dialog.present()
+
+    def _copy_profile_to_button(
+        self, target: VoiceProfile, updated: VoiceProfile, button: Gtk.Button
+    ) -> None:
+        target.model_id = updated.model_id
+        target.speaker_id = updated.speaker_id
+        target.speed = updated.speed
+        target.volume = updated.volume
+        button.set_label(self._voice_button_label(target.model_id))
+        button.set_tooltip_text(self._profile_tooltip(target))
+
+    def _profile_tooltip(self, profile: VoiceProfile) -> str:
+        model = self.engine.get_model(profile.model_id)
+        if not model:
+            return f"Missing model: {profile.model_id}"
+        speaker = model.speaker_name(profile.speaker_id)
+        return (
+            f"{model.display_name} · {speaker} · "
+            f"speed {profile.speed:.2f}× · volume {profile.volume:.2f}×"
+        )
+
+    def _save_profile(self, target: VoiceProfile, updated: VoiceProfile) -> None:
+        target.model_id = updated.model_id
+        target.speaker_id = updated.speaker_id
+        target.speed = updated.speed
+        target.volume = updated.volume
+        self.config.save()
+        if hasattr(self, "app_voice_button"):
+            self.app_voice_button.set_label(
+                self._voice_button_label(self.config.direct_chat.model_id)
+            )
+            self.app_voice_button.set_tooltip_text(
+                self._profile_tooltip(self.config.direct_chat)
+            )
+
 
     def _set_status(self, text: str, state: str = "neutral") -> None:
         self.status_text.set_text(text)
@@ -527,7 +685,7 @@ class MainWindow(Gtk.ApplicationWindow):
     def _connect_bot(self, *_args) -> None:
         token = self.config.discord_token.strip()
         if not token:
-            self._show_token_dialog()
+            self._open_settings()
             return
         self._start_discord(token)
 
@@ -535,7 +693,9 @@ class MainWindow(Gtk.ApplicationWindow):
         if self.discord and self.discord.is_running:
             return
         if not self.discord:
-            self.discord = DiscordService(self.config, self.database, self.engine, self._post_service_event)
+            self.discord = DiscordService(
+                self.config, self.database, self.engine, self._post_service_event
+            )
         self.connect_button.set_sensitive(False)
         self._set_status("Đang kết nối Discord…", "warning")
         self.discord.start(token)
@@ -543,110 +703,145 @@ class MainWindow(Gtk.ApplicationWindow):
     def _post_service_event(self, event: str, payload: dict) -> None:
         GLib.idle_add(self.handle_service_event, event, payload)
 
-    def _show_token_dialog(self) -> None:
-        dialog = Gtk.Dialog(title="Thiết lập Discord Bot", transient_for=self, modal=True)
-        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        dialog.add_button("Save and connect", Gtk.ResponseType.OK)
+
+    def _open_settings(self, *_args) -> None:
+        dialog = Gtk.Dialog(title="Settings", transient_for=self, modal=True)
+        dialog.set_default_size(650, 720)
+        dialog.add_button("Hủy", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Lưu cài đặt", Gtk.ResponseType.OK)
         content = dialog.get_content_area()
-        content.set_spacing(9)
+        content.set_spacing(11)
         content.set_margin_top(14)
         content.set_margin_bottom(14)
-        content.set_margin_start(14)
-        content.set_margin_end(14)
-        explanation = Gtk.Label(
-            label=(
-                "Dán Bot Token từ Discord Developer Portal. Token được lưu cục bộ "
-                "trong config.json riêng của ứng dụng."
-            )
+        content.set_margin_start(16)
+        content.set_margin_end(16)
+
+        token_section = Gtk.Label(label="Discord Bot")
+        token_section.add_css_class("heading")
+        token_section.set_xalign(0)
+        content.append(token_section)
+        token_note = Gtk.Label(
+            label="Bot Token được lưu cục bộ trong config.json với quyền truy cập chỉ dành cho tài khoản hiện tại."
         )
-        explanation.set_wrap(True)
-        explanation.set_xalign(0)
-        # Gtk.PasswordEntry is not available in all GTK4 Python bindings
-        # with the Gtk.Entry placeholder API. Use Gtk.Entry with password
-        # visibility disabled, plus an explicit show/hide control.
+        token_note.set_wrap(True)
+        token_note.set_xalign(0)
+        token_note.add_css_class("dim-label")
+        content.append(token_note)
+
+        token_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         token_entry = Gtk.Entry()
         token_entry.set_placeholder_text("Discord Bot Token")
         token_entry.set_input_purpose(Gtk.InputPurpose.PASSWORD)
         token_entry.set_visibility(False)
         token_entry.set_hexpand(True)
         token_entry.set_text(self.config.discord_token)
-
-        token_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         token_row.append(token_entry)
-        visibility_button = Gtk.ToggleButton(label="Hiện")
-        visibility_button.set_tooltip_text("Hiện hoặc ẩn Bot Token")
-
-        def on_token_visibility_toggled(button):
-            visible = button.get_active()
-            token_entry.set_visibility(visible)
-            button.set_label("Ẩn" if visible else "Hiện")
-
-        visibility_button.connect("toggled", on_token_visibility_toggled)
-        token_row.append(visibility_button)
-
-        content.append(explanation)
+        show_token = Gtk.ToggleButton(label="Hiện")
+        show_token.connect(
+            "toggled",
+            lambda button: (
+                token_entry.set_visibility(button.get_active()),
+                button.set_label("Ẩn" if button.get_active() else "Hiện"),
+            ),
+        )
+        token_row.append(show_token)
         content.append(token_row)
 
-        def on_response(_dialog, response):
-            if response == Gtk.ResponseType.OK:
-                new_token = token_entry.get_text().strip()
-                if not new_token:
-                    self._append_bubble(
-                        "Bot Token không được để trống.", "system", "vi", "System"
-                    )
-                    dialog.destroy()
-                    return
-                self.config.discord_token = new_token
-                self.config.save()
-                if self.discord and self.discord.is_running:
-                    self.discord.shutdown()
-                    self.discord = None
-                self._start_discord(new_token)
-            dialog.destroy()
+        content.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        activity_section = Gtk.Label(label="Discord Activity")
+        activity_section.add_css_class("heading")
+        activity_section.set_xalign(0)
+        content.append(activity_section)
 
-        dialog.connect("response", on_response)
-        dialog.present()
-
-    def _change_token(self, *_args) -> None:
-        self._show_token_dialog()
-
-    def _open_settings(self, *_args) -> None:
-        dialog = Gtk.Dialog(title="Settings", transient_for=self, modal=True)
-        dialog.add_button("Close", Gtk.ResponseType.CLOSE)
-        content = dialog.get_content_area()
-        content.set_spacing(10)
-        content.set_margin_top(14)
-        content.set_margin_bottom(14)
-        content.set_margin_start(14)
-        content.set_margin_end(14)
-        content.set_size_request(480, 640)
-
-        section = Gtk.Label(label="Discord message reader")
-        section.add_css_class("heading")
-        section.set_xalign(0)
-        content.append(section)
-        note = Gtk.Label(label="Chọn text channel mà bot được phép đọc. Mặc định không đọc channel nào.")
-        note.set_wrap(True)
-        note.set_xalign(0)
-        note.add_css_class("dim-label")
-        content.append(note)
-
-        language_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        language_row.append(Gtk.Label(label="Voice model cho tin nhắn Discord"))
-        discord_voice_button = Gtk.Button(
-            label=self._voice_button_label(self.config.discord_voice_model)
+        status_values = ["online", "idle", "dnd", "invisible"]
+        status_labels = ["Online", "Idle", "Do Not Disturb", "Invisible"]
+        status_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        status_label = Gtk.Label(label="Bot status")
+        status_label.set_xalign(0)
+        status_label.set_hexpand(True)
+        status_dropdown = Gtk.DropDown.new_from_strings(status_labels)
+        status_dropdown.set_selected(
+            status_values.index(self.config.discord_status)
+            if self.config.discord_status in status_values else 0
         )
-        discord_voice_button.set_icon_name("pan-down-symbolic")
-        discord_voice_button.set_hexpand(True)
-        discord_voice_button.connect(
-            "clicked", self._open_voice_picker, "discord", discord_voice_button
-        )
-        language_row.append(discord_voice_button)
-        content.append(language_row)
+        status_row.append(status_label)
+        status_row.append(status_dropdown)
+        content.append(status_row)
 
+        activity_values = ["playing", "listening", "watching", "competing", "streaming"]
+        activity_labels = ["Playing", "Listening", "Watching", "Competing", "Streaming"]
+        type_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        type_label = Gtk.Label(label="Activity type")
+        type_label.set_xalign(0)
+        type_label.set_hexpand(True)
+        activity_dropdown = Gtk.DropDown.new_from_strings(activity_labels)
+        activity_dropdown.set_selected(
+            activity_values.index(self.config.discord_activity_type)
+            if self.config.discord_activity_type in activity_values else 1
+        )
+        type_row.append(type_label)
+        type_row.append(activity_dropdown)
+        content.append(type_row)
+
+        name_label = Gtk.Label(label="Activity name")
+        name_label.set_xalign(0)
+        activity_name_entry = Gtk.Entry(placeholder_text="Ví dụ: to messages")
+        activity_name_entry.set_text(self.config.discord_activity_name)
+        content.append(name_label)
+        content.append(activity_name_entry)
+
+        stream_url_row = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        stream_url_label = Gtk.Label(label="Streaming URL")
+        stream_url_label.set_xalign(0)
+        stream_url_entry = Gtk.Entry(placeholder_text="https://twitch.tv/...")
+        stream_url_entry.set_text(self.config.discord_streaming_url)
+        stream_url_row.append(stream_url_label)
+        stream_url_row.append(stream_url_entry)
+        stream_url_row.set_visible(self.config.discord_activity_type == "streaming")
+        content.append(stream_url_row)
+
+        def on_activity_type_changed(dropdown, _pspec):
+            stream_url_row.set_visible(
+                dropdown.get_selected() == activity_values.index("streaming")
+            )
+        activity_dropdown.connect("notify::selected", on_activity_type_changed)
+
+        content.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        reader_section = Gtk.Label(label="Discord Message Reader")
+        reader_section.add_css_class("heading")
+        reader_section.set_xalign(0)
+        content.append(reader_section)
+        reader_note = Gtk.Label(
+            label="Chọn voice profile và các text channel mà bot được phép đọc."
+        )
+        reader_note.set_wrap(True)
+        reader_note.set_xalign(0)
+        reader_note.add_css_class("dim-label")
+        content.append(reader_note)
+
+        reader_voice_button = Gtk.Button(
+            label=self._voice_button_label(self.config.discord_reader.model_id)
+        )
+        reader_voice_button.set_icon_name("pan-down-symbolic")
+        reader_voice_button.set_hexpand(True)
+        reader_voice_button.set_tooltip_text(
+            self._profile_tooltip(self.config.discord_reader)
+        )
+        reader_voice_button.connect(
+            "clicked",
+            lambda button: self._open_voice_picker(
+                button, self.config.discord_reader,
+                lambda updated: self._save_profile(self.config.discord_reader, updated),
+            ),
+        )
+        content.append(reader_voice_button)
+
+        channels_label = Gtk.Label(label="Allowed text channels")
+        channels_label.set_xalign(0)
+        content.append(channels_label)
         channel_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
         channel_scroll = Gtk.ScrolledWindow()
-        channel_scroll.set_min_content_height(150)
+        channel_scroll.set_min_content_height(130)
         channel_scroll.set_child(channel_box)
         self._settings_checks = {}
         guild = self.guilds.get(self.config.guild_id) if self.config.guild_id else None
@@ -657,80 +852,64 @@ class MainWindow(Gtk.ApplicationWindow):
                 self._settings_checks[channel["id"]] = check
                 channel_box.append(check)
         else:
-            channel_box.append(Gtk.Label(label="Kết nối bot và chọn server trước."))
+            empty = Gtk.Label(label="Kết nối bot và chọn server trước.")
+            empty.add_css_class("dim-label")
+            channel_box.append(empty)
         content.append(channel_scroll)
 
-        content.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
-        tuning = Gtk.Label(label="Voice tuning")
-        tuning.add_css_class("heading")
-        tuning.set_xalign(0)
-        content.append(tuning)
-        speed_row, speed_scale = self._make_scale_row("Speed", 0.5, 2.0, self.config.tts_speed, "×")
-        volume_row, volume_scale = self._make_scale_row("Volume", 0.1, 2.0, self.config.tts_volume, "×")
-        content.append(speed_row)
-        content.append(speed_scale)
-        content.append(volume_row)
-        content.append(volume_scale)
-        content.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
-        preview_section = Gtk.Label(label="TTS preview")
-        preview_section.add_css_class("heading")
-        preview_section.set_xalign(0)
-        content.append(preview_section)
-        preview_note = Gtk.Label(
-            label="Nghe thử một câu mẫu bằng model đã chọn. Âm thanh chỉ phát trên máy, "
-                  "không gửi tới Discord."
-        )
-        preview_note.set_wrap(True)
-        preview_note.set_xalign(0)
-        preview_note.add_css_class("dim-label")
-        content.append(preview_note)
+        def save_settings(_dialog, response):
+            if response != Gtk.ResponseType.OK:
+                dialog.destroy()
+                return
 
-        preview_controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        preview_voice_button = Gtk.Button(
-            label=self._voice_button_label(self.config.preview_voice_model)
-        )
-        preview_voice_button.set_icon_name("pan-down-symbolic")
-        preview_voice_button.set_hexpand(True)
-        preview_voice_button.connect(
-            "clicked", self._open_voice_picker, "preview", preview_voice_button
-        )
-        preview_button = Gtk.Button(label="Nghe Piper")
-        preview_button.set_icon_name("audio-volume-high-symbolic")
-        preview_button.add_css_class("suggested-action")
-        preview_stop_button = Gtk.Button(label="Dừng")
-        preview_stop_button.set_icon_name("media-playback-stop-symbolic")
-        preview_stop_button.set_sensitive(False)
-        preview_controls.append(preview_voice_button)
-        preview_controls.append(preview_button)
-        preview_controls.append(preview_stop_button)
-        content.append(preview_controls)
-
-        preview_status = Gtk.Label(label="Nhấn Nghe Piper để phát câu mẫu.")
-        preview_status.set_wrap(True)
-        preview_status.set_xalign(0)
-        preview_status.add_css_class("dim-label")
-        content.append(preview_status)
-
-        preview_button.connect(
-            "clicked", self._preview_current_model,
-            preview_status, preview_stop_button, speed_scale, volume_scale,
-        )
-        preview_stop_button.connect(
-            "clicked", self._stop_tts_preview_from_settings, preview_status,
-        )
-
-        def save_settings(_dialog, _response):
-            self._stop_tts_preview()
-            selected_channels = [channel_id for channel_id, check in self._settings_checks.items() if check.get_active()]
+            old_token = self.config.discord_token
+            new_token = token_entry.get_text().strip()
+            self.config.discord_token = new_token
+            self.config.discord_status = status_values[
+                min(status_dropdown.get_selected(), len(status_values) - 1)
+            ]
+            self.config.discord_activity_type = activity_values[
+                min(activity_dropdown.get_selected(), len(activity_values) - 1)
+            ]
+            self.config.discord_activity_name = activity_name_entry.get_text().strip()
+            self.config.discord_streaming_url = stream_url_entry.get_text().strip()
+            selected_channels = [
+                channel_id for channel_id, check in self._settings_checks.items()
+                if check.get_active()
+            ]
             self.config.read_text_channel_ids = selected_channels
-            self.config.tts_speed = speed_scale.get_value()
-            self.config.tts_volume = volume_scale.get_value()
             self.config.save()
+
             if self.discord:
                 self.discord.set_read_channels(selected_channels)
+
+            token_changed = old_token != new_token
+            if token_changed:
+                old_service = self.discord
+                if old_service:
+                    old_service.shutdown()
+                self.discord = None
+                self.connect_button.set_sensitive(True)
+                if new_token:
+                    def wait_and_restart():
+                        if old_service and old_service.thread:
+                            old_service.thread.join(timeout=12)
+                        GLib.idle_add(self._start_discord, new_token)
+                    threading.Thread(
+                        target=wait_and_restart,
+                        name="discord-restart",
+                        daemon=True,
+                    ).start()
+            elif self.discord and self.discord.is_running:
+                self.discord.update_presence()
+            elif new_token:
+                self._start_discord(new_token)
+
             dialog.destroy()
+
         dialog.connect("response", save_settings)
         dialog.present()
+
 
     def _voice_button_label(self, model_id: str) -> str:
         model = self.engine.get_model(model_id)
@@ -748,34 +927,50 @@ class MainWindow(Gtk.ApplicationWindow):
                 f"Không mở được thư mục model: {exc}", "system", "vi", "System"
             )
 
-    def _open_voice_picker(
-        self, _button: Gtk.Button, context: str, model_button: Gtk.Button
-    ) -> None:
-        fields = {
-            "app": ("app_voice_model", "app_speaker_id"),
-            "discord": ("discord_voice_model", "discord_speaker_id"),
-            "preview": ("preview_voice_model", "preview_speaker_id"),
-        }
-        if context not in fields:
-            return
-        model_field, speaker_field = fields[context]
-        current_model_id = getattr(self.config, model_field)
-        current_speaker_id = getattr(self.config, speaker_field)
-        models = self.engine.list_models()
+    def _voice_button_label(self, model_id: str) -> str:
+        model = self.engine.get_model(model_id)
+        if model:
+            return model.display_name
+        return f"Missing model: {Path(model_id).name}" if model_id else "Chọn model"
 
-        dialog = Gtk.Dialog(title="Chọn voice model", transient_for=self, modal=True)
-        dialog.set_default_size(700, 540)
+    def _profile_tooltip(self, profile: VoiceProfile) -> str:
+        model = self.engine.get_model(profile.model_id)
+        if not model:
+            return f"Missing model: {profile.model_id}"
+        speaker = model.speaker_name(profile.speaker_id)
+        return (
+            f"{model.display_name} · {speaker} · "
+            f"speed {profile.speed:.2f}× · volume {profile.volume:.2f}×"
+        )
+
+    def _open_voice_directory(self, *_args) -> None:
+        try:
+            VOICE_DIR.mkdir(parents=True, exist_ok=True)
+            Gio.AppInfo.launch_default_for_uri(VOICE_DIR.resolve().as_uri(), None)
+        except Exception as exc:
+            logger.exception("Could not open Piper model directory")
+            self._append_bubble(
+                f"Không mở được thư mục model: {exc}", "system", "vi", "System"
+            )
+
+    def _open_voice_picker(
+        self, _button: Gtk.Button, profile: VoiceProfile, on_save
+    ) -> None:
+        models = self.engine.list_models()
+        draft = profile.copy()
+        dialog = Gtk.Dialog(title="Chọn Voice Model", transient_for=self, modal=True)
+        dialog.set_default_size(700, 650)
         header = Gtk.HeaderBar()
-        header_title = Gtk.Label(label="Voice models")
-        header_title.add_css_class("title")
-        header.set_title_widget(header_title)
+        title = Gtk.Label(label="Voice Models")
+        title.add_css_class("title")
+        header.set_title_widget(title)
         folder_button = Gtk.Button.new_from_icon_name("folder-open-symbolic")
-        folder_button.set_tooltip_text("Mở thư mục chứa model Piper")
+        folder_button.set_tooltip_text("Mở thư mục model Piper")
         folder_button.connect("clicked", self._open_voice_directory)
         header.pack_end(folder_button)
         dialog.set_titlebar(header)
         dialog.add_button("Hủy", Gtk.ResponseType.CANCEL)
-        use_button = dialog.add_button("Sử dụng model", Gtk.ResponseType.OK)
+        use_button = dialog.add_button("Lưu cấu hình", Gtk.ResponseType.OK)
         use_button.set_sensitive(bool(models))
 
         content = dialog.get_content_area()
@@ -786,30 +981,42 @@ class MainWindow(Gtk.ApplicationWindow):
         content.set_margin_end(14)
 
         note = Gtk.Label(
-            label="Chọn model bằng radio. Với model nhiều speaker, chọn speaker ngay bên dưới."
+            label="Chọn model, speaker và tinh chỉnh tốc độ/âm lượng. "
+                  "Nút Play chỉ phát thử trên máy."
         )
         note.set_wrap(True)
         note.set_xalign(0)
         note.add_css_class("dim-label")
         content.append(note)
 
+        speed_row, speed_scale = self._make_scale_row(
+            "Speed", 0.5, 2.0, draft.speed, "×"
+        )
+        volume_row, volume_scale = self._make_scale_row(
+            "Volume", 0.1, 2.0, draft.volume, "×"
+        )
+        content.append(speed_row)
+        content.append(speed_scale)
+        content.append(volume_row)
+        content.append(volume_scale)
+
         selected_model = {"id": ""}
         speaker_states: dict[str, dict[str, int]] = {}
         speaker_rows: dict[str, Gtk.Widget] = {}
-        preview_status = Gtk.Label(label="Nhấn nút Play để nghe thử model.")
+        preview_status = Gtk.Label(label="Nhấn Play để nghe thử model.")
         preview_status.set_wrap(True)
         preview_status.set_xalign(0)
         preview_status.add_css_class("dim-label")
-        preview_stop_button = Gtk.Button.new_from_icon_name("media-playback-stop-symbolic")
-        preview_stop_button.set_tooltip_text("Dừng nghe thử")
+        preview_stop_button = Gtk.Button.new_from_icon_name(
+            "media-playback-stop-symbolic"
+        )
+        preview_stop_button.set_tooltip_text("Dừng preview")
         preview_stop_button.set_sensitive(False)
 
         if not models:
             empty = Gtk.Label(
-                label=(
-                    "Chưa tìm thấy model hợp lệ. Hãy chép cả hai file .onnx và "
-                    ".onnx.json vào thư mục voices, sau đó mở lại bảng này."
-                )
+                label="Chưa tìm thấy model hợp lệ. Hãy chép cặp .onnx và "
+                      ".onnx.json vào thư mục voices."
             )
             empty.set_wrap(True)
             empty.set_xalign(0)
@@ -817,17 +1024,16 @@ class MainWindow(Gtk.ApplicationWindow):
             empty.set_margin_bottom(18)
             content.append(empty)
         else:
-            current_info = self.engine.get_model(current_model_id)
+            current_info = self.engine.get_model(draft.model_id)
             initial_id = current_info.model_id if current_info else models[0].model_id
             selected_model["id"] = initial_id
             rows_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-            models_by_id = {item.model_id: item for item in models}
+            models_by_id = {model.model_id: model for model in models}
             first_radio: Gtk.CheckButton | None = None
 
             for model in models:
                 saved_speaker = (
-                    current_speaker_id
-                    if model.model_id == initial_id
+                    draft.speaker_id if model.model_id == initial_id
                     else model.default_speaker_id
                 )
                 if not 0 <= int(saved_speaker) < model.num_speakers:
@@ -870,30 +1076,39 @@ class MainWindow(Gtk.ApplicationWindow):
                 metadata.add_css_class("dim-label")
                 details.append(metadata)
 
-                play_button = Gtk.Button.new_from_icon_name("media-playback-start-symbolic")
-                play_button.set_tooltip_text("Nghe thử model và speaker này")
+                play_button = Gtk.Button.new_from_icon_name(
+                    "media-playback-start-symbolic"
+                )
+                play_button.set_tooltip_text("Nghe thử model này")
                 play_button.connect(
-                    "clicked", self._preview_voice_model,
-                    model, speaker_state, preview_status, preview_stop_button,
-                    self.config.tts_speed, self.config.tts_volume,
+                    "clicked",
+                    lambda button, selected=model, state=speaker_state:
+                        self._preview_voice_model(
+                            button, selected, state, preview_status,
+                            preview_stop_button, speed_scale.get_value(),
+                            volume_scale.get_value(),
+                        ),
                 )
                 top_row.append(radio)
                 top_row.append(details)
                 top_row.append(play_button)
                 card.append(top_row)
 
-                speaker_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-                speaker_row.set_margin_start(36)
-                speaker_label = Gtk.Label(label="Speaker")
-                speaker_label.add_css_class("dim-label")
-                speaker_row.append(speaker_label)
                 if model.num_speakers > 1:
+                    speaker_row = Gtk.Box(
+                        orientation=Gtk.Orientation.HORIZONTAL, spacing=8
+                    )
+                    speaker_row.set_margin_start(36)
+                    speaker_label = Gtk.Label(label="Speaker")
+                    speaker_label.add_css_class("dim-label")
+                    speaker_row.append(speaker_label)
                     choices = [name for name, _speaker_id in model.speakers]
                     dropdown = Gtk.DropDown.new_from_strings(choices)
                     dropdown.set_hexpand(True)
                     selected_index = next(
                         (
-                            index for index, (_speaker_name, speaker_id) in enumerate(model.speakers)
+                            index for index, (_speaker_name, speaker_id)
+                            in enumerate(model.speakers)
                             if speaker_id == speaker_state["speaker_id"]
                         ),
                         0,
@@ -901,29 +1116,23 @@ class MainWindow(Gtk.ApplicationWindow):
                     dropdown.set_selected(selected_index)
                     dropdown.connect(
                         "notify::selected",
-                        lambda widget, _pspec, m=model, state=speaker_state: state.update(
-                            speaker_id=m.speakers[widget.get_selected()][1]
-                            if widget.get_selected() < len(m.speakers)
-                            else m.default_speaker_id
-                        ),
+                        lambda widget, _pspec, m=model, state=speaker_state:
+                            state.update(
+                                speaker_id=m.speakers[widget.get_selected()][1]
+                                if widget.get_selected() < len(m.speakers)
+                                else m.default_speaker_id
+                            ),
                     )
-                    speaker_row.append(dropdown)
-                else:
-                    speaker_row.append(Gtk.Label(label="Chỉ có một speaker"))
-                speaker_row.set_visible(
-                    model.model_id == initial_id and model.num_speakers > 1
-                )
-                speaker_rows[model.model_id] = speaker_row
-                card.append(speaker_row)
+                    speaker_row.set_visible(model.model_id == initial_id)
+                    speaker_rows[model.model_id] = speaker_row
+                    card.append(speaker_row)
 
                 def on_radio_toggled(radio_button, model_key=model.model_id):
                     if not radio_button.get_active():
                         return
                     selected_model["id"] = model_key
                     for key, row in speaker_rows.items():
-                        row.set_visible(
-                            key == model_key and models_by_id[key].num_speakers > 1
-                        )
+                        row.set_visible(key == model_key)
 
                 radio.connect("toggled", on_radio_toggled)
                 rows_box.append(card)
@@ -931,45 +1140,44 @@ class MainWindow(Gtk.ApplicationWindow):
 
             scroll = Gtk.ScrolledWindow()
             scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-            scroll.set_min_content_height(260)
+            scroll.set_min_content_height(230)
             scroll.set_vexpand(True)
             scroll.set_child(rows_box)
             content.append(scroll)
 
-        preview_controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        preview_controls = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL, spacing=8
+        )
         preview_status.set_hexpand(True)
         preview_controls.append(preview_status)
         preview_controls.append(preview_stop_button)
         content.append(preview_controls)
-
         preview_stop_button.connect(
-            "clicked", self._stop_tts_preview_from_settings, preview_status
+            "clicked", self._stop_tts_preview_from_picker, preview_status
         )
 
         def on_response(_dialog, response):
             self._stop_tts_preview()
             if response == Gtk.ResponseType.OK and selected_model["id"]:
-                model_id = selected_model["id"]
-                model = self.engine.get_model(model_id)
-                if model is not None:
-                    speaker_id = speaker_states[model_id]["speaker_id"]
-                    setattr(self.config, model_field, model_id)
-                    setattr(self.config, speaker_field, speaker_id)
-                    self.config.save()
-                    model_button.set_label(self._voice_button_label(model_id))
-                    model_button.set_tooltip_text(
-                        f"{model.display_name} · {model.language_name} · "
-                        f"{model.speaker_name(speaker_id)}"
-                    )
+                model = self.engine.get_model(selected_model["id"])
+                if model:
+                    draft.model_id = model.model_id
+                    draft.speaker_id = speaker_states[model.model_id]["speaker_id"]
+                    draft.speed = speed_scale.get_value()
+                    draft.volume = volume_scale.get_value()
+                    on_save(draft)
                     self.footer_status.set_text(
-                        f"Đã chọn voice model: {model.display_name}"
+                        f"Đã lưu voice profile: {model.display_name}"
                     )
             dialog.destroy()
 
         dialog.connect("response", on_response)
         dialog.present()
 
-    def _make_scale_row(self, label: str, minimum: float, maximum: float, value: float, suffix: str):
+    def _make_scale_row(
+        self, label: str, minimum: float, maximum: float,
+        value: float, suffix: str,
+    ):
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         title = Gtk.Label(label=label)
         title.set_xalign(0)
@@ -977,11 +1185,25 @@ class MainWindow(Gtk.ApplicationWindow):
         value_label = Gtk.Label(label=f"{value:.2f}{suffix}")
         row.append(title)
         row.append(value_label)
-        scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, minimum, maximum, 0.05)
+        scale = Gtk.Scale.new_with_range(
+            Gtk.Orientation.HORIZONTAL, minimum, maximum, 0.05
+        )
         scale.set_value(value)
         scale.set_draw_value(False)
-        scale.connect("value-changed", lambda widget: value_label.set_text(f"{widget.get_value():.2f}{suffix}"))
+        scale.connect(
+            "value-changed",
+            lambda widget: value_label.set_text(
+                f"{widget.get_value():.2f}{suffix}"
+            ),
+        )
         return row, scale
+
+    def _stop_tts_preview_from_picker(
+        self, _button, status_label: Gtk.Label
+    ) -> None:
+        self._stop_tts_preview()
+        status_label.set_text("Đã dừng nghe thử.")
+
 
     def _preview_text_for_model(self, model) -> str:
         family = model.language_code.lower().replace("-", "_").split("_", 1)[0]
@@ -1016,8 +1238,8 @@ class MainWindow(Gtk.ApplicationWindow):
         # Preview is local-only and reuses the same Piper/WAV/GTK playback path.
         self._stop_tts_preview()
         generation = self._preview_generation
-        speed = self.config.tts_speed if speed is None else speed
-        volume = self.config.tts_volume if volume is None else volume
+        speed = 1.0 if speed is None else speed
+        volume = 1.0 if volume is None else volume
         self._preview_button = button
         self._preview_stop_button = stop_button
         self._preview_status = status_label
@@ -1051,25 +1273,10 @@ class MainWindow(Gtk.ApplicationWindow):
 
         threading.Thread(target=worker, name="tts-preview", daemon=True).start()
 
-    def _preview_current_model(
-        self,
-        button: Gtk.Button,
-        status_label: Gtk.Label,
-        stop_button: Gtk.Button,
-        speed_scale: Gtk.Scale,
-        volume_scale: Gtk.Scale,
-    ) -> None:
-        model = self.engine.get_model(self.config.preview_voice_model)
-        if model is None:
-            status_label.set_text(
-                "Không tìm thấy model. Hãy chép file .onnx và .onnx.json vào thư mục voices."
-            )
-            return
-        speaker_state = {"speaker_id": self.config.preview_speaker_id}
-        self._preview_voice_model(
-            button, model, speaker_state, status_label, stop_button,
-            speed_scale.get_value(), volume_scale.get_value(),
-        )
+    def _unused_preview_current_model_removed(self) -> None:
+        # Preview is launched directly from each model row in the Voice Picker.
+        return
+
 
     def _start_tts_preview(self, generation: int, wav_path: Path) -> bool:
         if generation != self._preview_generation or self._preview_button is None:
