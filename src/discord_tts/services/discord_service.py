@@ -308,6 +308,67 @@ class DiscordService:
         guild = self.bot.get_guild(guild_id or self.config.guild_id or 0)
         return guild.voice_client if guild else None
 
+    def _instrument_voice_udp(self, voice_client: discord.VoiceClient) -> None:
+        """Log whether RTP audio packets are accepted by the local UDP socket."""
+        connection = getattr(voice_client, "_connection", None)
+        if connection is None:
+            logger.warning("Cannot instrument voice UDP: voice connection state is missing")
+            return
+        if getattr(connection, "_discord_tts_udp_instrumented", False):
+            return
+
+        original_send_packet = connection.send_packet
+        stats = {
+            "sent_packets": 0,
+            "sent_bytes": 0,
+            "dropped_packets": 0,
+            "last_error": None,
+        }
+
+        def observed_send_packet(packet: bytes) -> None:
+            try:
+                original_send_packet(packet)
+            except OSError as exc:
+                stats["dropped_packets"] += 1
+                stats["last_error"] = repr(exc)
+                logger.error(
+                    "Voice UDP packet send failed: packet=%d bytes=%d error=%r",
+                    stats["sent_packets"] + stats["dropped_packets"],
+                    len(packet), exc,
+                )
+                raise
+
+            stats["sent_packets"] += 1
+            stats["sent_bytes"] += len(packet)
+            if stats["sent_packets"] <= 2:
+                try:
+                    peer = connection.socket.getpeername()
+                except OSError as exc:
+                    peer = f"unavailable: {exc}"
+                try:
+                    local = connection.socket.getsockname()
+                except OSError as exc:
+                    local = f"unavailable: {exc}"
+                logger.info(
+                    "Voice UDP packet accepted by local socket: packet=%d bytes=%d "
+                    "local=%s peer=%s",
+                    stats["sent_packets"], len(packet), local, peer,
+                )
+            elif stats["sent_packets"] % 50 == 0:
+                logger.debug(
+                    "Voice UDP progress: sent_packets=%d sent_bytes=%d dropped_packets=%d",
+                    stats["sent_packets"], stats["sent_bytes"], stats["dropped_packets"],
+                )
+
+        connection.send_packet = observed_send_packet
+        connection._discord_tts_udp_stats = stats
+        connection._discord_tts_udp_instrumented = True
+        logger.info(
+            "Installed voice UDP diagnostics: channel=%s endpoint=%s mode=%s",
+            getattr(voice_client.channel, "name", None),
+            voice_client.endpoint, voice_client.mode,
+        )
+
     async def _join_channel(self, channel: discord.VoiceChannel | discord.StageChannel) -> discord.VoiceClient:
         logger.info(
             "Joining voice channel: guild=%s (%s), channel=%s (%s)",
@@ -316,9 +377,13 @@ class DiscordService:
         existing = channel.guild.voice_client
         if existing and existing.is_connected():
             if existing.channel and existing.channel.id == channel.id:
+                self._instrument_voice_udp(existing)
                 return existing
-            return await existing.move_to(channel)
+            moved = await existing.move_to(channel)
+            self._instrument_voice_udp(moved)
+            return moved
         voice_client = await channel.connect()
+        self._instrument_voice_udp(voice_client)
         logger.info(
             "Voice connect completed: connected=%s channel=%s voice_client=%r",
             voice_client.is_connected(), getattr(voice_client.channel, "name", None), voice_client,
