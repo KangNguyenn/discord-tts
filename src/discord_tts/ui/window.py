@@ -36,6 +36,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._preview_media: Gtk.MediaFile | None = None
         self._preview_path: Path | None = None
         self._preview_button: Gtk.Button | None = None
+        self._preview_stop_button: Gtk.Button | None = None
         self._preview_status: Gtk.Label | None = None
 
         self.set_default_size(760, 760)
@@ -709,6 +710,7 @@ class MainWindow(Gtk.ApplicationWindow):
         preview_button.connect(
             "clicked", self._preview_tts,
             preview_text, preview_language, speed_scale, volume_scale,
+            preview_status, preview_stop_button,
         )
         preview_stop_button.connect(
             "clicked", self._stop_tts_preview_from_settings, preview_status,
@@ -762,10 +764,12 @@ class MainWindow(Gtk.ApplicationWindow):
         language_dropdown: Gtk.DropDown,
         speed_scale: Gtk.Scale,
         volume_scale: Gtk.Scale,
+        status_label: Gtk.Label,
+        stop_button: Gtk.Button,
     ) -> None:
         text = text_entry.get_text().strip()
         if not text:
-            self._preview_status.set_text("Hãy nhập nội dung cần nghe thử.")
+            status_label.set_text("Hãy nhập nội dung cần nghe thử.")
             return
 
         # A preview only synthesizes and plays a local WAV; it never contacts Discord.
@@ -775,6 +779,9 @@ class MainWindow(Gtk.ApplicationWindow):
         speed = speed_scale.get_value()
         volume = volume_scale.get_value()
         self._preview_button = button
+        self._preview_stop_button = stop_button
+        self._preview_status = status_label
+        stop_button.set_sensitive(True)
         self._preview_status.set_text(
             f"Đang tổng hợp bằng model {self.engine.model_id(language)}…"
         )
@@ -864,6 +871,7 @@ class MainWindow(Gtk.ApplicationWindow):
         media, self._preview_media = self._preview_media, None
         path, self._preview_path = self._preview_path, None
         button, self._preview_button = self._preview_button, None
+        stop_button, self._preview_stop_button = self._preview_stop_button, None
         if media is not None:
             try:
                 media.pause()
@@ -874,15 +882,33 @@ class MainWindow(Gtk.ApplicationWindow):
             path.unlink(missing_ok=True)
         if button is not None:
             button.set_sensitive(True)
+        if stop_button is not None:
+            stop_button.set_sensitive(False)
         if self._preview_status is not None:
             self._preview_status.set_text(message)
         self._preview_status = None
+
+    def _tts_preview_failed(self, generation: int, message: str) -> bool:
+        if generation != self._preview_generation:
+            return GLib.SOURCE_REMOVE
+        self._preview_generation += 1
+        button, self._preview_button = self._preview_button, None
+        stop_button, self._preview_stop_button = self._preview_stop_button, None
+        if button is not None:
+            button.set_sensitive(True)
+        if stop_button is not None:
+            stop_button.set_sensitive(False)
+        if self._preview_status is not None:
+            self._preview_status.set_text(f"Lỗi tổng hợp TTS: {message}")
+        self._preview_status = None
+        return GLib.SOURCE_REMOVE
 
     def _stop_tts_preview(self) -> None:
         self._preview_generation += 1
         media, self._preview_media = self._preview_media, None
         path, self._preview_path = self._preview_path, None
         button, self._preview_button = self._preview_button, None
+        stop_button, self._preview_stop_button = self._preview_stop_button, None
         if media is not None:
             try:
                 media.pause()
@@ -893,6 +919,8 @@ class MainWindow(Gtk.ApplicationWindow):
             path.unlink(missing_ok=True)
         if button is not None:
             button.set_sensitive(True)
+        if stop_button is not None:
+            stop_button.set_sensitive(False)
         self._preview_status = None
 
     def _stop_tts_preview_from_settings(self, _button, status_label: Gtk.Label) -> None:
