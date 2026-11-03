@@ -10,7 +10,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gdk, Gio, GLib, Gtk
 
-from discord_tts.config import APP_NAME, AppConfig, DATA_DIR, HISTORY_DB
+from discord_tts.config import APP_NAME, AppConfig, DATA_DIR, HISTORY_DB, VOICE_DIR
 from discord_tts.services.discord_service import DiscordService
 from discord_tts.storage.database import Database
 from discord_tts.tts.engine import PiperEngine
@@ -188,13 +188,16 @@ class MainWindow(Gtk.ApplicationWindow):
         composer.add_css_class("composer")
         root.append(composer)
         top_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=7)
-        lang_label = Gtk.Label(label="Language")
+        lang_label = Gtk.Label(label="Voice")
         lang_label.add_css_class("dim-label")
         top_row.append(lang_label)
-        self.language_dropdown = Gtk.DropDown.new_from_strings(["Tiếng Việt", "English"])
-        self.language_dropdown.set_selected(0)
-        self.language_dropdown.set_tooltip_text("Chọn ngôn ngữ cho câu sắp gửi")
-        top_row.append(self.language_dropdown)
+        self.app_voice_button = Gtk.Button(label=self._voice_button_label(self.config.app_voice_model))
+        self.app_voice_button.set_icon_name("pan-down-symbolic")
+        self.app_voice_button.set_tooltip_text("Chọn voice model và speaker")
+        self.app_voice_button.connect(
+            "clicked", self._open_voice_picker, "app", self.app_voice_button
+        )
+        top_row.append(self.app_voice_button)
         top_row.append(Gtk.Label(label="· Enter để gửi · Shift+Enter xuống dòng"))
         top_row.get_last_child().add_css_class("dim-label")
         composer.append(top_row)
@@ -241,7 +244,7 @@ class MainWindow(Gtk.ApplicationWindow):
         composer.append(text_row)
 
         footer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        self.footer_status = Gtk.Label(label="Chọn ngôn ngữ trước mỗi câu · Voice model được lưu offline")
+        self.footer_status = Gtk.Label(label="Voice model được lưu offline · Enter để gửi · Shift+Enter xuống dòng")
         self.footer_status.add_css_class("dim-label")
         self.footer_status.set_xalign(0)
         self.footer_status.set_hexpand(True)
@@ -270,21 +273,19 @@ class MainWindow(Gtk.ApplicationWindow):
             return True
         return False
 
-    def _selected_language(self) -> str:
-        return "en" if self.language_dropdown.get_selected() == 1 else "vi"
-
     def _send_message(self, *_args) -> None:
         text = self._input_text().strip()
         if not text:
             return
-        language = self._selected_language()
+        model_id = self.engine.model_id(self.config.app_voice_model)
+        language = self.engine.language_code(model_id)
         self._append_bubble(text, "outgoing", language, "You")
         self.database.add_history("outgoing", "app", language, text)
         self.input_view.get_buffer().set_text("")
         if not self.discord:
             self._append_bubble("Discord bot chưa được cấu hình.", "system", language, "System")
             return
-        self.discord.speak(text, language, "app")
+        self.discord.speak(text, model_id, self.config.app_speaker_id, "app")
         self.input_view.grab_focus()
 
     def _append_bubble(self, text: str, direction: str, language: str, author: str, timestamp: str | None = None) -> None:
@@ -306,7 +307,7 @@ class MainWindow(Gtk.ApplicationWindow):
             time = datetime.fromisoformat(timestamp).astimezone().strftime("%H:%M") if timestamp else datetime.now().strftime("%H:%M")
         except (TypeError, ValueError):
             time = datetime.now().strftime("%H:%M")
-        language_tag = "EN" if language == "en" else "VI"
+        language_tag = (language or "unknown").replace("-", "_").split("_", 1)[0].upper()
         meta = Gtk.Label(label=f"{author} · {language_tag} · {time}")
         meta.set_xalign(1 if direction == "outgoing" else 0)
         meta.add_css_class("chat-meta")
@@ -355,7 +356,11 @@ class MainWindow(Gtk.ApplicationWindow):
             self.quick_box.append(chip)
 
     def _on_quick_clicked(self, _button, text: str, language: str) -> None:
-        self.language_dropdown.set_selected(1 if language == "en" else 0)
+        legacy_model = self.config.voice_en if language == "en" else self.config.voice_vi
+        self.config.app_voice_model = self.engine.model_id(legacy_model)
+        self.config.app_speaker_id = 0
+        self.config.save()
+        self.app_voice_button.set_label(self._voice_button_label(self.config.app_voice_model))
         self.input_view.get_buffer().set_text(text)
         self._send_message()
 
@@ -627,11 +632,16 @@ class MainWindow(Gtk.ApplicationWindow):
         content.append(note)
 
         language_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        language_row.append(Gtk.Label(label="Ngôn ngữ mặc định cho tin nhắn Discord"))
-        lang = Gtk.DropDown.new_from_strings(["Tiếng Việt", "English"])
-        lang.set_selected(1 if self.config.discord_incoming_language == "en" else 0)
-        lang.set_hexpand(True)
-        language_row.append(lang)
+        language_row.append(Gtk.Label(label="Voice model cho tin nhắn Discord"))
+        discord_voice_button = Gtk.Button(
+            label=self._voice_button_label(self.config.discord_voice_model)
+        )
+        discord_voice_button.set_icon_name("pan-down-symbolic")
+        discord_voice_button.set_hexpand(True)
+        discord_voice_button.connect(
+            "clicked", self._open_voice_picker, "discord", discord_voice_button
+        )
+        language_row.append(discord_voice_button)
         content.append(language_row)
 
         channel_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
@@ -661,84 +671,63 @@ class MainWindow(Gtk.ApplicationWindow):
         content.append(speed_scale)
         content.append(volume_row)
         content.append(volume_scale)
-        info = Gtk.Label(label="Pitch và lựa chọn voice/model sẽ được mở rộng ở phần Voice settings. Model Piper cần tải một lần và sau đó chạy offline.")
-        info.set_wrap(True)
-        info.set_xalign(0)
-        info.add_css_class("dim-label")
-        content.append(info)
-
         content.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
         preview_section = Gtk.Label(label="TTS preview")
         preview_section.add_css_class("heading")
         preview_section.set_xalign(0)
         content.append(preview_section)
         preview_note = Gtk.Label(
-            label="Tạo giọng nói bằng Piper rồi phát trực tiếp trên máy. "
-                  "Bước này không gửi âm thanh tới Discord."
+            label="Nghe thử một câu mẫu bằng model đã chọn. Âm thanh chỉ phát trên máy, "
+                  "không gửi tới Discord."
         )
         preview_note.set_wrap(True)
         preview_note.set_xalign(0)
         preview_note.add_css_class("dim-label")
         content.append(preview_note)
 
-        preview_text = Gtk.Entry()
-        preview_text.set_placeholder_text("Nhập câu để nghe thử…")
-        preview_text.set_text("Xin chào! Đây là giọng đọc thử.")
-        content.append(preview_text)
-
         preview_controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        preview_language = Gtk.DropDown.new_from_strings(["Tiếng Việt", "English"])
-        preview_language.set_selected(0)
-        preview_language.set_hexpand(True)
+        preview_voice_button = Gtk.Button(
+            label=self._voice_button_label(self.config.preview_voice_model)
+        )
+        preview_voice_button.set_icon_name("pan-down-symbolic")
+        preview_voice_button.set_hexpand(True)
+        preview_voice_button.connect(
+            "clicked", self._open_voice_picker, "preview", preview_voice_button
+        )
         preview_button = Gtk.Button(label="Nghe Piper")
         preview_button.set_icon_name("audio-volume-high-symbolic")
         preview_button.add_css_class("suggested-action")
         preview_stop_button = Gtk.Button(label="Dừng")
         preview_stop_button.set_icon_name("media-playback-stop-symbolic")
         preview_stop_button.set_sensitive(False)
-        preview_controls.append(preview_language)
+        preview_controls.append(preview_voice_button)
         preview_controls.append(preview_button)
         preview_controls.append(preview_stop_button)
         content.append(preview_controls)
 
-        preview_status = Gtk.Label(label="Chọn ngôn ngữ và nhấn Nghe thử.")
+        preview_status = Gtk.Label(label="Nhấn Nghe Piper để phát câu mẫu.")
         preview_status.set_wrap(True)
         preview_status.set_xalign(0)
         preview_status.add_css_class("dim-label")
         content.append(preview_status)
 
         preview_button.connect(
-            "clicked", self._preview_tts,
-            preview_text, preview_language, speed_scale, volume_scale,
-            preview_status, preview_stop_button,
+            "clicked", self._preview_current_model,
+            preview_status, preview_stop_button, speed_scale, volume_scale,
         )
         preview_stop_button.connect(
             "clicked", self._stop_tts_preview_from_settings, preview_status,
         )
 
-        download_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        download_vi = Gtk.Button(label="Tải voice VI")
-        download_en = Gtk.Button(label="Tải voice EN")
-        download_status = Gtk.Label(label="")
-        download_status.set_wrap(True)
-        download_status.add_css_class("dim-label")
-        download_vi.connect("clicked", self._download_voice, "vi", download_status)
-        download_en.connect("clicked", self._download_voice, "en", download_status)
-        download_box.append(download_vi)
-        download_box.append(download_en)
-        content.append(download_box)
-        content.append(download_status)
-
         def save_settings(_dialog, _response):
             self._stop_tts_preview()
             selected_channels = [channel_id for channel_id, check in self._settings_checks.items() if check.get_active()]
-            self.config.discord_incoming_language = "en" if lang.get_selected() == 1 else "vi"
             self.config.read_text_channel_ids = selected_channels
             self.config.tts_speed = speed_scale.get_value()
             self.config.tts_volume = volume_scale.get_value()
             self.config.save()
             if self.discord:
-                self.discord.set_read_channels(selected_channels, self.config.discord_incoming_language)
+                self.discord.set_read_channels(selected_channels)
             dialog.destroy()
         dialog.connect("response", save_settings)
         dialog.present()
