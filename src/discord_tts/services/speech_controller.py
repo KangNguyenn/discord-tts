@@ -93,6 +93,75 @@ class SpeechController:
             )
         return problems
 
+    async def _wait_for_dave_ready(
+        self, voice_client: discord.VoiceClient, generation: int, timeout: float = 20.0
+    ) -> bool:
+        """Wait for mandatory DAVE E2EE before sending media to a normal voice channel."""
+        if isinstance(voice_client.channel, discord.StageChannel):
+            logger.info(
+                "DAVE readiness check skipped for Stage channel (generation=%d)",
+                generation,
+            )
+            return True
+
+        connection = getattr(voice_client, "_connection", None)
+        if connection is None:
+            raise RuntimeError("Không đọc được trạng thái DAVE của kết nối Discord Voice.")
+
+        def ready() -> bool:
+            try:
+                return bool(connection.can_encrypt)
+            except Exception:
+                return False
+
+        started = time.monotonic()
+        next_log = started
+        while not ready() and time.monotonic() - started < timeout:
+            if generation != self._generation:
+                logger.info(
+                    "DAVE wait cancelled because speech was superseded (generation=%d)",
+                    generation,
+                )
+                return False
+            if not voice_client.is_connected():
+                raise RuntimeError("Discord Voice đã ngắt kết nối trong lúc chờ DAVE.")
+            now = time.monotonic()
+            if now >= next_log:
+                session = getattr(connection, "dave_session", None)
+                logger.info(
+                    "Waiting for Discord DAVE readiness: generation=%d "
+                    "protocol_version=%s session_exists=%s session_ready=%s "
+                    "can_encrypt=%s elapsed=%.1fs",
+                    generation, getattr(connection, "dave_protocol_version", None),
+                    session is not None, getattr(session, "ready", None),
+                    ready(), now - started,
+                )
+                next_log = now + 2.0
+            await asyncio.sleep(0.1)
+
+        session = getattr(connection, "dave_session", None)
+        if not ready():
+            logger.error(
+                "Discord DAVE did not become ready: generation=%d protocol_version=%s "
+                "session_exists=%s session_ready=%s waited=%.1fs",
+                generation, getattr(connection, "dave_protocol_version", None),
+                session is not None, getattr(session, "ready", None),
+                time.monotonic() - started,
+            )
+            raise RuntimeError(
+                "Discord chưa hoàn tất mã hóa đầu-cuối DAVE. "
+                "Ứng dụng đã chặn phát để tránh gửi âm thanh không được mã hóa. "
+                "Hãy thử rời voice channel rồi kết nối lại; nếu vẫn lỗi, gửi log DAVE."
+            )
+
+        logger.info(
+            "Discord DAVE is ready: generation=%d protocol_version=%s "
+            "session_ready=%s waited=%.1fs",
+            generation, getattr(connection, "dave_protocol_version", None),
+            getattr(session, "ready", None), time.monotonic() - started,
+        )
+        return True
+
     def submit(self, text: str, language: str, guild_id: int | None, source: str) -> None:
         """Must be called on the Discord asyncio loop."""
         self._generation += 1
@@ -181,6 +250,9 @@ class SpeechController:
                 getattr(getattr(voice_client, "channel", None), "name", None),
                 getattr(voice_client, "latency", None),
             )
+
+            if not await self._wait_for_dave_ready(voice_client, generation):
+                return
 
             voice_problems = self._voice_playback_diagnostics(voice_client, generation)
             if voice_problems:
