@@ -57,7 +57,8 @@ class WavPCMAudio(discord.AudioSource):
     OUTPUT_FRAMES = 960
 
     def __init__(self, path: Path):
-        self._wav = wave.open(str(path), "rb")
+        self._path = str(path)
+        self._wav = wave.open(self._path, "rb")
         self._channels = self._wav.getnchannels()
         self._sample_width = self._wav.getsampwidth()
         self._sample_rate = self._wav.getframerate()
@@ -86,8 +87,8 @@ class WavPCMAudio(discord.AudioSource):
         if not raw:
             if not self._logged_eof:
                 logger.info(
-                    "WAV PCM stream reached EOF after %d packets (%s)",
-                    self._read_count, self._wav.getname(),
+                    "WAV PCM stream reached EOF after %d packets (path=%s)",
+                    self._read_count, self._path,
                 )
                 self._logged_eof = True
             return b""
