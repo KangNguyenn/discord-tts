@@ -1,0 +1,5 @@
+discord.py[voice]>=2.7.1,<3
+piper-tts>=1.3,<2
+keyring>=25,<27
+secretstorage>=3.2
+numpy>=1.26
