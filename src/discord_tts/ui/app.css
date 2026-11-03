@@ -24,7 +24,6 @@ window {
   border-radius: 16px;
   padding: 10px 13px;
   min-width: 90px;
-  max-width: 520px;
   background: alpha(@card_bg_color, 0.95);
   border: 1px solid alpha(currentColor, 0.09);
 }
