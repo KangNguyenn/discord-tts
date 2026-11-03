@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class SpeechController:
-    """One playback pipeline shared by app chat, slash commands and Discord messages."""
+    """One playback pipeline for Direct Chat, Quick Chat, and Discord messages."""
 
     def __init__(
         self,

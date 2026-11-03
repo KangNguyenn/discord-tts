@@ -166,3 +166,17 @@ def test_old_database_is_kept_as_backup_not_migrated(tmp_path):
     Database(path)
 
     assert (tmp_path / "history.legacy.sqlite3").exists()
+
+
+def test_deleted_last_quick_chat_is_not_seeded_again_on_restart(tmp_path):
+    from discord_tts.storage.database import Database
+
+    path = tmp_path / "history.sqlite3"
+    db = Database(path)
+    quick_ids = [row["id"] for row in db.quick_messages()]
+    assert quick_ids
+    for quick_id in quick_ids:
+        db.delete_quick_message(quick_id)
+
+    restarted = Database(path)
+    assert restarted.quick_messages() == []

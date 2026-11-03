@@ -62,7 +62,7 @@ class AppConfig:
     discord_reader: VoiceProfile = field(default_factory=VoiceProfile)
     discord_status: str = "online"
     discord_activity_type: str = "listening"
-    discord_activity_name: str = "to messages"
+    discord_activity_name: str = "Discord TTS"
     discord_streaming_url: str = ""
     hide_on_close: bool = True
 
@@ -104,7 +104,7 @@ class AppConfig:
                 discord_reader=VoiceProfile.from_dict(values.get("discord_reader")),
                 discord_status=str(values.get("discord_status", "online")),
                 discord_activity_type=str(values.get("discord_activity_type", "listening")),
-                discord_activity_name=str(values.get("discord_activity_name", "to messages")),
+                discord_activity_name=str(values.get("discord_activity_name", "Discord TTS")),
                 discord_streaming_url=str(values.get("discord_streaming_url", "")),
                 hide_on_close=bool(values.get("hide_on_close", True)),
             )

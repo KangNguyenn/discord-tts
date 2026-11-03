@@ -15,8 +15,9 @@ class Database:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
+        is_new_database = not self.path.exists()
         self._prepare_fresh_database()
-        self._initialize()
+        self._initialize(seed_defaults=is_new_database or not self.path.exists())
         try:
             os.chmod(self.path, 0o600)
         except OSError:
@@ -47,7 +48,7 @@ class Database:
         connection.row_factory = sqlite3.Row
         return connection
 
-    def _initialize(self) -> None:
+    def _initialize(self, seed_defaults: bool) -> None:
         with self._connect() as db:
             db.executescript(
                 """
@@ -74,8 +75,7 @@ class Database:
                 """
             )
             db.execute(f"PRAGMA user_version = {DATABASE_SCHEMA_VERSION}")
-            count = db.execute("SELECT COUNT(*) FROM quick_messages").fetchone()[0]
-            if count == 0:
+            if seed_defaults:
                 defaults = [
                     ("Xin chào", "Xin chào mọi người!", DEFAULT_MODEL, 0, 1.0, 1.0, 0),
                     ("Cảm ơn", "Cảm ơn bạn nhé!", DEFAULT_MODEL, 0, 1.0, 1.0, 1),

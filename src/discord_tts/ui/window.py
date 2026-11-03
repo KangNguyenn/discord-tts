@@ -838,8 +838,8 @@ class MainWindow(Gtk.ApplicationWindow):
             lambda button: self._open_voice_picker(
                 button, self.config.discord_reader,
                 lambda updated: self._save_profile_to_button(
-                self.config.discord_reader, updated, reader_voice_button
-            ),
+                    self.config.discord_reader, updated, reader_voice_button
+                ),
             ),
         )
         content.append(reader_voice_button)
@@ -1384,10 +1384,6 @@ class MainWindow(Gtk.ApplicationWindow):
         if stop_button is not None:
             stop_button.set_sensitive(False)
         self._preview_status = None
-
-    def _stop_tts_preview_from_settings(self, _button, status_label: Gtk.Label) -> None:
-        self._stop_tts_preview()
-        status_label.set_text("Đã dừng nghe thử.")
 
     def _notify(self, title: str, body: str) -> None:
         notification = Gio.Notification.new(title)
