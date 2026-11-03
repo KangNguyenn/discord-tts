@@ -5,13 +5,13 @@ A local-first Linux desktop app for controlling a Discord TTS bot. The UI is wri
 ## Current MVP
 
 - GTK4 chat-style composer: `Enter` sends and speaks; `Shift+Enter` adds a newline.
-- Each app message has an explicit Vietnamese/English selector.
+- App chat uses a selectable local Piper model and speaker.
 - New speech interrupts the current playback.
 - Discord `/join`, `/leave`, `/tts`, `/stop`, and `/quick` commands.
 - Optional Discord text-channel reader. It is off by default; choose allowed channels in Settings.
 - Quick Chat buttons, delete controls, and SQLite history.
 - Bot Token can be entered or changed in the app; it is stored in the local config file with owner-only permissions (`0600`). No Keyring or Secret Service is required.
-- Piper model downloader for Vietnamese and English.
+- Local Piper model discovery from .onnx/.onnx.json pairs; multi-speaker models support speaker selection.
 - Close hides the window; the app attempts to register a StatusNotifierItem. KDE panels and many Wayland panels support it natively. GNOME needs a tray/AppIndicator extension. Launching the app again should reactivate the existing window.
 
 ## Important setup notes
@@ -47,13 +47,22 @@ Or use the `discord-tts` command after installing the project into the environme
 
 ### Voice models
 
-Open Settings and press **Tải voice VI** and **Tải voice EN**. These download the model and its JSON config into:
+The app uses local models only; it does not download models or fetch an online catalog. Open the model picker and press the folder icon in its title bar to open:
 
 ```text
 ~/.local/share/discord-tts/voices/
 ```
 
-The initial model IDs are `vi_VN-vais1000-medium` and `en_US-lessac-medium`. Models are downloaded separately and are not bundled into the app. Check each model card's license and attribution terms before redistribution.
+Copy both files for each Piper voice into that folder:
+
+```text
+voice-name.onnx
+voice-name.onnx.json
+```
+
+Subdirectories are supported. The app scans recursively and lists models with a matching JSON sidecar. Language, quality, sample rate, and speaker information are read from local metadata. Multi-speaker models expose a speaker dropdown in the picker.
+
+Piper models can be found in the [Piper voice repository](https://huggingface.co/rhasspy/piper-voices). Check each model card's license and attribution terms before using or redistributing a model.
 
 ## Configuration and data
 
@@ -98,8 +107,8 @@ JSON config: settings + Discord Bot Token
 
 ## Known MVP limitations
 
-- Discord messages use a configurable default language because the sender cannot choose a language for another person's message. App chat and `/tts` have an explicit language choice.
-- The Settings UI currently exposes speed and volume. The MVP uses one default model per language. A model picker, pitch-shifting and per-user voice profiles are not implemented yet.
+- Discord message reading uses one configured model/speaker because the sender cannot choose a voice for another person's message. App chat and `/tts` have an explicit language choice.
+- The Settings UI exposes speed and volume. Pitch-shifting and per-user voice profiles are not implemented yet.
 - System-tray support is StatusNotifierItem-based. A tray watcher/extension is required; close-to-hide and launcher reactivation are fallbacks.
 - Slash commands are synced globally. Discord may take time to make new global commands visible.
 - This project has not yet been runtime-tested against a live Discord server in this build environment.
