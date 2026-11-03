@@ -821,6 +821,7 @@ class MainWindow(Gtk.ApplicationWindow):
             initial_id = current_info.model_id if current_info else models[0].model_id
             selected_model["id"] = initial_id
             rows_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            models_by_id = {item.model_id: item for item in models}
             first_radio: Gtk.CheckButton | None = None
 
             for model in models:
@@ -853,7 +854,6 @@ class MainWindow(Gtk.ApplicationWindow):
                 details.set_hexpand(True)
                 name = Gtk.Label(label=model.display_name)
                 name.set_xalign(0)
-                name.set_ellipsize(3)
                 name.add_css_class("heading")
                 details.append(name)
 
@@ -916,16 +916,13 @@ class MainWindow(Gtk.ApplicationWindow):
                 speaker_rows[model.model_id] = speaker_row
                 card.append(speaker_row)
 
-                def on_radio_toggled(
-                    radio_button, model_key=model.model_id, model_item=model
-                ):
+                def on_radio_toggled(radio_button, model_key=model.model_id):
                     if not radio_button.get_active():
                         return
                     selected_model["id"] = model_key
                     for key, row in speaker_rows.items():
                         row.set_visible(
-                            key == model_key
-                            and next(item for item in models if item.model_id == key).num_speakers > 1
+                            key == model_key and models_by_id[key].num_speakers > 1
                         )
 
                 radio.connect("toggled", on_radio_toggled)
