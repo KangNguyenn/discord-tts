@@ -170,11 +170,14 @@ class DiscordService:
                 and message.channel.id in self.config.read_text_channel_ids
             )
             if is_allowed_channel and content and not content.startswith(("!", "/")):
+                model_id = self.engine.model_id(self.config.discord_voice_model)
+                language = self.engine.language_code(model_id)
                 self.event_callback(
                     "discord_message",
                     {
                         "text": content,
-                        "language": self.config.discord_incoming_language,
+                        "language": language,
+                        "model_id": model_id,
                         "author": message.author.display_name,
                         "channel": getattr(message.channel, "name", "Discord"),
                         "guild_id": message.guild.id,
@@ -183,9 +186,10 @@ class DiscordService:
                 if self.speech:
                     self.speech.submit(
                         content,
-                        self.config.discord_incoming_language,
+                        model_id,
                         message.guild.id,
                         "discord",
+                        self.config.discord_speaker_id,
                     )
 
             # Overriding on_message disables the default command dispatcher.
@@ -244,7 +248,10 @@ class DiscordService:
                 await interaction.response.send_message("Lệnh này chỉ dùng trong server.", ephemeral=True)
                 return
             if self.speech:
-                self.speech.submit(text, language.value, interaction.guild.id, "slash")
+                model_id = self.config.voice_en if language.value == "en" else self.config.voice_vi
+                self.speech.submit(
+                    text, self.engine.model_id(model_id), interaction.guild.id, "slash", 0
+                )
             await interaction.response.send_message("Đã nhận câu TTS.", ephemeral=True)
 
         @bot.tree.command(name="quick", description="Đọc một Quick Chat theo tên")
@@ -257,7 +264,11 @@ class DiscordService:
                 await interaction.response.send_message("Lệnh này chỉ dùng trong server.", ephemeral=True)
                 return
             if self.speech:
-                self.speech.submit(item["text"], item["language"], interaction.guild.id, "quick")
+                legacy_model = self.config.voice_en if item["language"] == "en" else self.config.voice_vi
+                self.speech.submit(
+                    item["text"], self.engine.model_id(legacy_model),
+                    interaction.guild.id, "quick", 0,
+                )
             await interaction.response.send_message(f"Đang đọc **{item['title']}**.", ephemeral=True)
 
         # Prefix aliases are convenient for servers where slash commands are unavailable.
@@ -265,7 +276,10 @@ class DiscordService:
         async def prefix_tts(ctx: commands.Context, language: str, *, text: str) -> None:
             lang = "en" if language.lower() in {"en", "english"} else "vi"
             if ctx.guild and self.speech:
-                self.speech.submit(text, lang, ctx.guild.id, "prefix")
+                legacy_model = self.config.voice_en if lang == "en" else self.config.voice_vi
+                self.speech.submit(
+                    text, self.engine.model_id(legacy_model), ctx.guild.id, "prefix", 0
+                )
 
         try:
             await bot.start(self._token, reconnect=True)
@@ -355,18 +369,24 @@ class DiscordService:
             await voice.disconnect(force=True)
         self.event_callback("voice_left", {})
 
-    def speak(self, text: str, language: str, source: str = "app") -> None:
-        self._submit(self._speak(text, language, source))
+    def speak(
+        self, text: str, model_id: str, speaker_id: int = 0, source: str = "app"
+    ) -> None:
+        self._submit(self._speak(text, model_id, speaker_id, source))
 
-    async def _speak(self, text: str, language: str, source: str) -> None:
+    async def _speak(
+        self, text: str, model_id: str, speaker_id: int, source: str
+    ) -> None:
         logger.info(
-            "Speech requested: source=%s language=%s guild_id=%s text_length=%d",
-            source, language, self.config.guild_id, len(text),
+            "Speech requested: source=%s model=%s speaker_id=%d guild_id=%s text_length=%d",
+            source, model_id, speaker_id, self.config.guild_id, len(text),
         )
         if not self.speech:
             self.event_callback("speech_error", {"source": source, "message": "Discord bot chưa sẵn sàng."})
             return
-        self.speech.submit(text, language, self.config.guild_id, source)
+        self.speech.submit(
+            text, model_id, self.config.guild_id, source, speaker_id
+        )
 
     def stop_speech(self) -> None:
         self._submit(self._stop_speech())
@@ -381,9 +401,8 @@ class DiscordService:
         self.config.save()
         self._publish_guilds_threadsafe()
 
-    def set_read_channels(self, channel_ids: list[int], language: str) -> None:
+    def set_read_channels(self, channel_ids: list[int]) -> None:
         self.config.read_text_channel_ids = channel_ids
-        self.config.discord_incoming_language = language
         self.config.save()
 
     def _publish_guilds_threadsafe(self) -> None:
