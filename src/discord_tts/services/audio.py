@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes.util
 import logging
+import tempfile
 import wave
 from pathlib import Path
 
@@ -140,3 +141,59 @@ class WavPCMAudio(discord.AudioSource):
             logger.debug("Closed WAV source after %d PCM packets", self._read_count)
         except Exception:
             logger.exception("Failed to close WAV source")
+
+
+def convert_wav_to_discord_pcm_wav(path: Path) -> Path:
+    """Convert a Piper WAV into the exact PCM packets used by Discord playback.
+
+    The returned WAV can be played locally to isolate resampling/formatting from
+    Discord's voice transport and Opus encryption.
+    """
+    source = WavPCMAudio(path)
+    output_file = tempfile.NamedTemporaryFile(
+        prefix="discord-tts-pcm-preview-", suffix=".wav", delete=False
+    )
+    output_path = Path(output_file.name)
+    output_file.close()
+
+    packet_count = 0
+    sample_count = 0
+    sum_squares = 0.0
+    peak = 0
+    sample_min = 32767
+    sample_max = -32768
+    try:
+        with wave.open(str(output_path), "wb") as wav_file:
+            wav_file.setnchannels(2)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(WavPCMAudio.OUTPUT_RATE)
+            while True:
+                packet = source.read()
+                if not packet:
+                    break
+                wav_file.writeframesraw(packet)
+                samples = np.frombuffer(packet, dtype="<i2").astype(np.float64)
+                if samples.size:
+                    packet_count += 1
+                    sample_count += int(samples.size)
+                    sum_squares += float(np.dot(samples, samples))
+                    peak = max(peak, int(np.max(np.abs(samples))))
+                    sample_min = min(sample_min, int(samples.min()))
+                    sample_max = max(sample_max, int(samples.max()))
+
+        if packet_count == 0:
+            raise ValueError("WAV không chứa dữ liệu âm thanh PCM.")
+        rms = float(np.sqrt(sum_squares / sample_count)) if sample_count else 0.0
+        logger.info(
+            "Discord PCM conversion summary: path=%s packets=%d duration=%.3fs "
+            "sample_min=%d sample_max=%d peak=%d rms=%.1f",
+            output_path, packet_count,
+            (sample_count / 2) / WavPCMAudio.OUTPUT_RATE,
+            sample_min, sample_max, peak, rms,
+        )
+        return output_path
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        raise
+    finally:
+        source.cleanup()
