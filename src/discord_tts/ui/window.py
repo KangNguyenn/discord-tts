@@ -365,7 +365,6 @@ class MainWindow(Gtk.ApplicationWindow):
                       f"{float(item['speed']):.2f}× · {float(item['volume']):.2f}×"
             )
             profile_label.add_css_class("dim-label")
-            profile_label.set_ellipsize(3)
             profile_label.set_max_width_chars(30)
             profile_label.set_tooltip_text(
                 f"{model_name} · {speaker_name} · speed {item['speed']} · volume {item['volume']}"
@@ -567,13 +566,20 @@ class MainWindow(Gtk.ApplicationWindow):
         target.speed = updated.speed
         target.volume = updated.volume
         self.config.save()
-        if hasattr(self, "app_voice_button"):
+        if target is self.config.direct_chat and hasattr(self, "app_voice_button"):
             self.app_voice_button.set_label(
                 self._voice_button_label(self.config.direct_chat.model_id)
             )
             self.app_voice_button.set_tooltip_text(
                 self._profile_tooltip(self.config.direct_chat)
             )
+
+    def _save_profile_to_button(
+        self, target: VoiceProfile, updated: VoiceProfile, button: Gtk.Button
+    ) -> None:
+        self._copy_profile_to_button(target, updated, button)
+        self.config.save()
+        button.set_tooltip_text(self._profile_tooltip(target))
 
 
     def _set_status(self, text: str, state: str = "neutral") -> None:
@@ -831,7 +837,9 @@ class MainWindow(Gtk.ApplicationWindow):
             "clicked",
             lambda button: self._open_voice_picker(
                 button, self.config.discord_reader,
-                lambda updated: self._save_profile(self.config.discord_reader, updated),
+                lambda updated: self._save_profile_to_button(
+                self.config.discord_reader, updated, reader_voice_button
+            ),
             ),
         )
         content.append(reader_voice_button)
@@ -873,10 +881,13 @@ class MainWindow(Gtk.ApplicationWindow):
             ]
             self.config.discord_activity_name = activity_name_entry.get_text().strip()
             self.config.discord_streaming_url = stream_url_entry.get_text().strip()
-            selected_channels = [
-                channel_id for channel_id, check in self._settings_checks.items()
-                if check.get_active()
-            ]
+            selected_channels = (
+                [
+                    channel_id for channel_id, check in self._settings_checks.items()
+                    if check.get_active()
+                ]
+                if self._settings_checks else list(self.config.read_text_channel_ids)
+            )
             self.config.read_text_channel_ids = selected_channels
             self.config.save()
 
@@ -910,22 +921,6 @@ class MainWindow(Gtk.ApplicationWindow):
         dialog.connect("response", save_settings)
         dialog.present()
 
-
-    def _voice_button_label(self, model_id: str) -> str:
-        model = self.engine.get_model(model_id)
-        if model:
-            return model.display_name
-        return f"Missing model: {Path(model_id).name}" if model_id else "Chọn model"
-
-    def _open_voice_directory(self, *_args) -> None:
-        try:
-            VOICE_DIR.mkdir(parents=True, exist_ok=True)
-            Gio.AppInfo.launch_default_for_uri(VOICE_DIR.resolve().as_uri(), None)
-        except Exception as exc:
-            logger.exception("Could not open Piper model directory")
-            self._append_bubble(
-                f"Không mở được thư mục model: {exc}", "system", "vi", "System"
-            )
 
     def _voice_button_label(self, model_id: str) -> str:
         model = self.engine.get_model(model_id)
@@ -1272,11 +1267,6 @@ class MainWindow(Gtk.ApplicationWindow):
                 GLib.idle_add(self._tts_preview_failed, generation, str(exc))
 
         threading.Thread(target=worker, name="tts-preview", daemon=True).start()
-
-    def _unused_preview_current_model_removed(self) -> None:
-        # Preview is launched directly from each model row in the Voice Picker.
-        return
-
 
     def _start_tts_preview(self, generation: int, wav_path: Path) -> bool:
         if generation != self._preview_generation or self._preview_button is None:

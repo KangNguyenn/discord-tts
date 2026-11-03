@@ -98,10 +98,13 @@ def test_multi_speaker_map_fills_unnamed_ids(tmp_path):
     )
 
 
-def test_old_config_migrates_discord_language_to_model(tmp_path, monkeypatch):
+def test_fresh_config_ignores_legacy_values_and_defaults_to_vietnamese(
+    tmp_path, monkeypatch
+):
     monkeypatch.setattr(config_module, "CONFIG_DIR", tmp_path)
     (tmp_path / "config.json").write_text(
         json.dumps({
+            "discord_token": "old-token-must-not-load",
             "discord_incoming_language": "en",
             "voice_en": "custom-English-model",
         }),
@@ -110,6 +113,56 @@ def test_old_config_migrates_discord_language_to_model(tmp_path, monkeypatch):
 
     config = AppConfig.load()
 
-    assert config.discord_voice_model == "custom-English-model"
-    assert config.discord_speaker_id == 0
-    assert config.app_voice_model == "vi_VN-vais1000-medium"
+    assert config.discord_token == ""
+    assert config.direct_chat.model_id == "vi_VN-vais1000-medium"
+    assert config.discord_reader.model_id == "vi_VN-vais1000-medium"
+    assert (tmp_path / "config.legacy.json").exists()
+
+
+def test_database_starts_fresh_and_stores_quick_chat_voice_profiles(tmp_path):
+    from discord_tts.storage.database import Database
+
+    path = tmp_path / "history.sqlite3"
+    db = Database(path)
+
+    initial = db.quick_messages()
+    assert initial
+    assert all(item["model_id"] == "vi_VN-vais1000-medium" for item in initial)
+
+    quick_id = db.add_quick_message(
+        "Japanese", "こんにちは", "ja_JP-example-medium", 2, 1.1, 0.8
+    )
+    item = next(row for row in db.quick_messages() if row["id"] == quick_id)
+    assert item["model_id"] == "ja_JP-example-medium"
+    assert item["speaker_id"] == 2
+    assert item["speed"] == 1.1
+    assert item["volume"] == 0.8
+
+    db.update_quick_message(
+        quick_id, "Japanese edited", "こんにちは！",
+        "ja_JP-example-medium", 1, 0.9, 1.2,
+    )
+    edited = next(row for row in db.quick_messages() if row["id"] == quick_id)
+    assert edited["title"] == "Japanese edited"
+    assert edited["speaker_id"] == 1
+    assert edited["speed"] == 0.9
+    assert edited["volume"] == 1.2
+
+
+def test_old_database_is_kept_as_backup_not_migrated(tmp_path):
+    import sqlite3
+
+    from discord_tts.storage.database import Database
+
+    path = tmp_path / "history.sqlite3"
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "CREATE TABLE quick_messages (id INTEGER PRIMARY KEY, title TEXT, text TEXT, language TEXT)"
+        )
+        db.execute(
+            "INSERT INTO quick_messages(title, text, language) VALUES ('Old', 'Old text', 'en')"
+        )
+
+    Database(path)
+
+    assert (tmp_path / "history.legacy.sqlite3").exists()

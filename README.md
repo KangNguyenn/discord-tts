@@ -5,13 +5,14 @@ A local-first Linux desktop app for controlling a Discord TTS bot. The UI is wri
 ## Current MVP
 
 - GTK4 chat-style composer: `Enter` sends and speaks; `Shift+Enter` adds a newline.
-- App chat uses a selectable local Piper model and speaker.
+- Direct Chat and Discord Message Reader each have independent model, speaker, speed, and volume profiles.
 - New speech interrupts the current playback.
-- Discord `/join`, `/leave`, `/tts`, `/stop`, and `/quick` commands.
 - Optional Discord text-channel reader. It is off by default; choose allowed channels and its local voice model in Settings.
-- Quick Chat buttons, delete controls, and SQLite history.
+- Quick Chat create/edit forms include name, text, and a model button. Each Quick Chat saves its own model, speaker, speed, and volume profile.
+- SQLite conversation history and Quick Chat storage.
 - Bot Token can be entered or changed in the app; it is stored in the local config file with owner-only permissions (`0600`). No Keyring or Secret Service is required.
-- Local Piper model discovery from .onnx/.onnx.json pairs; the shared picker previews models and supports speaker selection.
+- Local Piper model discovery from .onnx/.onnx.json pairs; the shared picker previews models, supports speaker selection, and controls speed and volume per profile.
+- Settings include the Discord Bot Token, bot status/activity, and the allowed text-channel reader configuration.
 - Close hides the window; the app attempts to register a StatusNotifierItem. KDE panels and many Wayland panels support it natively. GNOME needs a tray/AppIndicator extension. Launching the app again should reactivate the existing window.
 
 ## Important setup notes
@@ -47,6 +48,9 @@ Or use the `discord-tts` command after installing the project into the environme
 
 ### Voice models
 
+The first-run defaults for Direct Chat and Discord Message Reader use `vi_VN-vais1000-medium`. New Quick Chats copy the current Direct Chat profile when created, then keep their profile independently.
+
+
 The app uses local models only; it does not download models or fetch an online catalog. Open the model picker and press the folder icon in its title bar to open:
 
 ```text
@@ -66,9 +70,9 @@ Piper models can be found in the [Piper voice repository](https://huggingface.co
 
 ## Configuration and data
 
-- Config, including Bot Token: `~/.config/discord-tts/config.json`
+- Config, including Bot Token and Discord Activity: `~/.config/discord-tts/config.json` (schema version 2; prior config files are backed up as `config.legacy.json` and are not migrated).
 - Config file permissions: owner read/write only (`0600`)
-- TTS models / SQLite history: `~/.local/share/discord-tts/`
+- TTS models / SQLite history: `~/.local/share/discord-tts/` (an older database is preserved as `history.legacy.sqlite3`; Quick Chats and history are not migrated).
 - Temporary WAV files: system temporary directory; removed after playback
 
 The token is stored in plaintext inside the local config file, protected by filesystem permissions. Anyone with access to your Linux account can still read it. Do not share this file or include it in backups/repositories without protecting it.
