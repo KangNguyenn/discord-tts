@@ -54,10 +54,11 @@ class AppConfig:
 
             # Migrate old configs: the Discord reader used a vi/en dropdown.
             if "discord_voice_model" not in values:
+                defaults = cls()
                 old_language = values.get("discord_incoming_language", "vi")
                 legacy_key = "voice_en" if old_language == "en" else "voice_vi"
                 values["discord_voice_model"] = values.get(
-                    legacy_key, cls.discord_voice_model
+                    legacy_key, defaults.discord_voice_model
                 )
 
             allowed = {item.name for item in cls.__dataclass_fields__.values()}
