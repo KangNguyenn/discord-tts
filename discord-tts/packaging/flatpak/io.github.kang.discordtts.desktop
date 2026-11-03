@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Discord TTS
+Comment=Local offline TTS bot for Discord
+Exec=discord-tts
+Icon=io.github.kang.discordtts
+Terminal=false
+Type=Application
+Categories=AudioVideo;Audio;Network;InstantMessaging;
+StartupNotify=true
