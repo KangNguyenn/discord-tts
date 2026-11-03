@@ -102,6 +102,8 @@ class PiperEngine:
                 raise ValueError("metadata root must be a JSON object")
 
             audio = metadata.get("audio") or {}
+            if not isinstance(audio, dict):
+                audio = {}
             language = metadata.get("language") or {}
             if not isinstance(language, dict):
                 language = {}
