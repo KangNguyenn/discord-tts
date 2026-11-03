@@ -8,10 +8,11 @@ version = "0.1.0"
 description = "A local-first GTK4 Discord TTS bot for Linux"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "GPL-3.0-or-later" }
+license = "GPL-3.0-or-later"
 authors = [{ name = "Discord TTS contributors" }]
 dependencies = [
   "discord.py[voice]>=2.7.1,<3",
+  "davey>=0.1.0,<0.2.0",
   "piper-tts>=1.3,<2",
   "numpy>=1.26",
 ]
