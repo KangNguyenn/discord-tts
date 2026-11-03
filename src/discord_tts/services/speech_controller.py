@@ -24,13 +24,11 @@ class SpeechController:
         voice_provider: Callable[[int | None], discord.VoiceClient | None],
         event_callback: Callable[[str, dict], None],
         engine: PiperEngine,
-        settings_provider: Callable[[], tuple[float, float]],
     ):
         self.loop = loop
         self.voice_provider = voice_provider
         self.event_callback = event_callback
         self.engine = engine
-        self.settings_provider = settings_provider
         self._generation = 0
         self._tasks: set[asyncio.Task] = set()
 
@@ -164,7 +162,7 @@ class SpeechController:
 
     def submit(
         self, text: str, model_id: str, guild_id: int | None, source: str,
-        speaker_id: int = 0,
+        speaker_id: int = 0, speed: float = 1.0, volume: float = 1.0,
     ) -> None:
         """Must be called on the Discord asyncio loop."""
         self._generation += 1
@@ -182,7 +180,9 @@ class SpeechController:
             voice_client.stop()
             self.event_callback("speech_interrupted", {"source": source})
         task = self.loop.create_task(
-            self._speak(generation, text, model_id, speaker_id, guild_id, source)
+            self._speak(
+                generation, text, model_id, speaker_id, speed, volume, guild_id, source
+            )
         )
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
@@ -193,6 +193,8 @@ class SpeechController:
         text: str,
         model_id: str,
         speaker_id: int,
+        speed: float,
+        volume: float,
         guild_id: int | None,
         source: str,
     ) -> None:
@@ -214,7 +216,8 @@ class SpeechController:
             ensure_opus_loaded()
             logger.info("Opus encoder is loaded (generation=%d)", generation)
 
-            speed, volume = self.settings_provider()
+            speed = max(0.5, min(2.0, float(speed)))
+            volume = max(0.1, min(2.0, float(volume)))
             logger.info(
                 "Piper synthesis starting: generation=%d model=%s speaker_id=%d speed=%.2f volume=%.2f",
                 generation, self.engine.model_id(model_id), speaker_id, speed, volume,

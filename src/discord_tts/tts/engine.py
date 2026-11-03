@@ -14,13 +14,6 @@ from discord_tts.config import VOICE_DIR
 
 logger = logging.getLogger(__name__)
 
-# Compatibility mapping for old Quick Chat entries and Discord /tts commands.
-VOICE_IDS = {
-    "vi": "vi_VN-vais1000-medium",
-    "en": "en_US-lessac-medium",
-}
-
-
 class TTSUnavailable(RuntimeError):
     pass
 
@@ -187,9 +180,6 @@ class PiperEngine:
         )
 
     def get_model(self, model_id: str) -> VoiceModel | None:
-        if model_id in VOICE_IDS:
-            model_id = VOICE_IDS[model_id]
-
         models = self.list_models()
         exact = next((item for item in models if item.model_id == model_id), None)
         if exact:
@@ -202,38 +192,19 @@ class PiperEngine:
         model = self.get_model(selection)
         if model:
             return model.model_id
-        return VOICE_IDS.get(selection, selection)
+        return selection
 
     def model_path(self, selection: str) -> Path:
         model = self.get_model(selection)
         if model:
             return model.path
-        if selection in VOICE_IDS:
-            selection = VOICE_IDS[selection]
         return self.voice_dir / f"{Path(selection).name}.onnx"
 
     def language_code(self, selection: str) -> str:
         model = self.get_model(selection)
         if model:
             return model.language_code
-        return Path(VOICE_IDS.get(selection, selection)).name.split("-", 1)[0]
-
-    def resolve_legacy_language(self, language: str) -> str:
-        """Resolve old vi/en callers to their configured default model IDs."""
-        preferred = VOICE_IDS.get(language, VOICE_IDS["vi"])
-        installed = self.get_model(preferred)
-        if installed:
-            return installed.model_id
-
-        family = "vi" if language == "vi" else "en"
-        fallback = next(
-            (
-                item for item in self.list_models()
-                if item.language_code.replace("-", "_").split("_", 1)[0].lower() == family
-            ),
-            None,
-        )
-        return fallback.model_id if fallback else preferred
+        return Path(selection).name.split("-", 1)[0]
 
     def is_installed(self, selection: str) -> bool:
         return self.get_model(selection) is not None

@@ -2,19 +2,45 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+DATABASE_SCHEMA_VERSION = 2
+DEFAULT_MODEL = "vi_VN-vais1000-medium"
 
 
 class Database:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
+        self._prepare_fresh_database()
         self._initialize()
         try:
             os.chmod(self.path, 0o600)
         except OSError:
             pass
+
+    def _prepare_fresh_database(self) -> None:
+        if not self.path.exists():
+            return
+        try:
+            with sqlite3.connect(self.path) as db:
+                version = int(db.execute("PRAGMA user_version").fetchone()[0])
+        except sqlite3.Error:
+            version = -1
+        if version == DATABASE_SCHEMA_VERSION:
+            return
+
+        # Do not migrate old history or Quick Chat settings. Preserve the old
+        # database as a local backup and create an empty database for this schema.
+        backup = self.path.with_name(f"{self.path.stem}.legacy{self.path.suffix}")
+        if backup.exists():
+            backup = self.path.with_name(
+                f"{self.path.stem}.legacy.{time.time_ns()}{self.path.suffix}"
+            )
+        os.replace(self.path, backup)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path)
@@ -34,25 +60,33 @@ class Database:
                     text TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'sent'
                 );
+
                 CREATE TABLE IF NOT EXISTS quick_messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     title TEXT NOT NULL,
                     text TEXT NOT NULL,
-                    language TEXT NOT NULL DEFAULT 'vi',
+                    model_id TEXT NOT NULL,
+                    speaker_id INTEGER NOT NULL DEFAULT 0,
+                    speed REAL NOT NULL DEFAULT 1.0,
+                    volume REAL NOT NULL DEFAULT 1.0,
                     position INTEGER NOT NULL DEFAULT 0
                 );
                 """
             )
+            db.execute(f"PRAGMA user_version = {DATABASE_SCHEMA_VERSION}")
             count = db.execute("SELECT COUNT(*) FROM quick_messages").fetchone()[0]
             if count == 0:
+                defaults = [
+                    ("Xin chào", "Xin chào mọi người!", DEFAULT_MODEL, 0, 1.0, 1.0, 0),
+                    ("Cảm ơn", "Cảm ơn bạn nhé!", DEFAULT_MODEL, 0, 1.0, 1.0, 1),
+                    ("Hello", "Xin chào mọi người!", DEFAULT_MODEL, 0, 1.0, 1.0, 2),
+                    ("BRB", "Mình quay lại ngay nhé!", DEFAULT_MODEL, 0, 1.0, 1.0, 3),
+                ]
                 db.executemany(
-                    "INSERT INTO quick_messages(title, text, language, position) VALUES (?, ?, ?, ?)",
-                    [
-                        ("Xin chào", "Xin chào mọi người!", "vi", 0),
-                        ("Cảm ơn", "Cảm ơn bạn nhé!", "vi", 1),
-                        ("Hello", "Hello everyone!", "en", 2),
-                        ("BRB", "Be right back!", "en", 3),
-                    ],
+                    "INSERT INTO quick_messages"
+                    "(title, text, model_id, speaker_id, speed, volume, position) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    defaults,
                 )
 
     def add_history(
@@ -83,23 +117,33 @@ class Database:
                 ).fetchall()
             )
 
-    def add_quick_message(self, title: str, text: str, language: str) -> None:
+    def add_quick_message(
+        self, title: str, text: str, model_id: str, speaker_id: int,
+        speed: float, volume: float,
+    ) -> int:
         with self._connect() as db:
             position = db.execute(
                 "SELECT COALESCE(MAX(position), -1) + 1 FROM quick_messages"
             ).fetchone()[0]
+            cursor = db.execute(
+                "INSERT INTO quick_messages"
+                "(title, text, model_id, speaker_id, speed, volume, position) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (title, text, model_id, speaker_id, speed, volume, position),
+            )
+            return int(cursor.lastrowid)
+
+    def update_quick_message(
+        self, quick_id: int, title: str, text: str, model_id: str,
+        speaker_id: int, speed: float, volume: float,
+    ) -> None:
+        with self._connect() as db:
             db.execute(
-                "INSERT INTO quick_messages(title, text, language, position) VALUES (?, ?, ?, ?)",
-                (title, text, language, position),
+                "UPDATE quick_messages SET title = ?, text = ?, model_id = ?, "
+                "speaker_id = ?, speed = ?, volume = ? WHERE id = ?",
+                (title, text, model_id, speaker_id, speed, volume, quick_id),
             )
 
     def delete_quick_message(self, quick_id: int) -> None:
         with self._connect() as db:
             db.execute("DELETE FROM quick_messages WHERE id = ?", (quick_id,))
-
-    def find_quick_message(self, title: str):
-        with self._connect() as db:
-            return db.execute(
-                "SELECT * FROM quick_messages WHERE lower(title) = lower(?) LIMIT 1",
-                (title,),
-            ).fetchone()
