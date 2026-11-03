@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
+import math
+import struct
 import threading
 from typing import Callable
 
@@ -318,6 +320,71 @@ class DiscordService:
             return
 
         original_send_packet = connection.send_packet
+        original_get_voice_packet = voice_client._get_voice_packet
+        packet_diagnostics = {"count": 0, "opus_decoder": None}
+
+        def observed_get_voice_packet(opus_data: bytes) -> bytes:
+            packet_diagnostics["count"] += 1
+            packet_number = packet_diagnostics["count"]
+            dave_session = getattr(connection, "dave_session", None)
+            dave_protocol_version = getattr(connection, "dave_protocol_version", None)
+            dave_ready = getattr(dave_session, "ready", None)
+            try:
+                dave_can_encrypt = connection.can_encrypt
+            except Exception:
+                dave_can_encrypt = "unavailable"
+
+            if packet_number <= 3:
+                try:
+                    decoder = packet_diagnostics["opus_decoder"]
+                    if decoder is None:
+                        decoder = discord.opus.Decoder()
+                        packet_diagnostics["opus_decoder"] = decoder
+                    opus_frames = discord.opus.Decoder.packet_get_nb_frames(opus_data)
+                    opus_samples_per_frame = discord.opus.Decoder.packet_get_samples_per_frame(opus_data)
+                    decoded_pcm = decoder.decode(opus_data)
+                    decoded_sample_count = len(decoded_pcm) // 2
+                    decoded_rms = (
+                        math.sqrt(
+                            sum(sample * sample for (sample,) in struct.iter_unpack("<h", decoded_pcm))
+                            / decoded_sample_count
+                        )
+                        if decoded_sample_count else 0.0
+                    )
+                    logger.info(
+                        "Voice Opus self-check: packet=%d opus_bytes=%d opus_head=%s "
+                        "frames=%d samples_per_frame=%d decoded_bytes=%d decoded_rms=%.1f",
+                        packet_number, len(opus_data), opus_data[:8].hex(),
+                        opus_frames, opus_samples_per_frame, len(decoded_pcm), decoded_rms,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Voice Opus self-check failed: packet=%d opus_bytes=%d",
+                        packet_number, len(opus_data),
+                    )
+
+            packet = original_get_voice_packet(opus_data)
+            if packet_number <= 3:
+                try:
+                    rtp_sequence = struct.unpack(">H", packet[2:4])[0]
+                    rtp_timestamp = struct.unpack(">I", packet[4:8])[0]
+                    rtp_ssrc = struct.unpack(">I", packet[8:12])[0]
+                    logger.info(
+                        "Voice RTP packet prepared: packet=%d bytes=%d version=%d "
+                        "payload_type=%d sequence=%d timestamp=%d ssrc=%d "
+                        "dave_protocol_version=%s dave_session=%s dave_ready=%s "
+                        "dave_can_encrypt=%s mode=%s",
+                        packet_number, len(packet), packet[0] >> 6, packet[1] & 0x7F,
+                        rtp_sequence, rtp_timestamp, rtp_ssrc,
+                        dave_protocol_version, dave_session is not None, dave_ready,
+                        dave_can_encrypt, voice_client.mode,
+                    )
+                except Exception:
+                    logger.exception("Could not inspect prepared voice RTP packet")
+            return packet
+
+        voice_client._get_voice_packet = observed_get_voice_packet
+
         stats = {
             "sent_packets": 0,
             "sent_bytes": 0,
