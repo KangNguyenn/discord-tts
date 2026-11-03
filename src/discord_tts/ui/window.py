@@ -928,16 +928,6 @@ class MainWindow(Gtk.ApplicationWindow):
             return model.display_name
         return f"Missing model: {Path(model_id).name}" if model_id else "Chọn model"
 
-    def _profile_tooltip(self, profile: VoiceProfile) -> str:
-        model = self.engine.get_model(profile.model_id)
-        if not model:
-            return f"Missing model: {profile.model_id}"
-        speaker = model.speaker_name(profile.speaker_id)
-        return (
-            f"{model.display_name} · {speaker} · "
-            f"speed {profile.speed:.2f}× · volume {profile.volume:.2f}×"
-        )
-
     def _open_voice_directory(self, *_args) -> None:
         try:
             VOICE_DIR.mkdir(parents=True, exist_ok=True)
@@ -1078,7 +1068,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 play_button.connect(
                     "clicked",
                     lambda button, selected=model, state=speaker_state:
-                        self._preview_voice_model(
+                        self._preview_model(
                             button, selected, state, preview_status,
                             preview_stop_button, speed_scale.get_value(),
                             volume_scale.get_value(),
@@ -1217,7 +1207,7 @@ class MainWindow(Gtk.ApplicationWindow):
         }
         return samples.get(family, "Hello! This is a preview of the selected voice.")
 
-    def _preview_voice_model(
+    def _preview_model(
         self,
         button: Gtk.Button,
         model,

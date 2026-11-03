@@ -46,7 +46,7 @@ def test_discovers_local_model_and_reads_metadata(tmp_path):
     assert model.speakers == (("speaker_a", 0), ("speaker_b", 1))
 
 
-def test_get_model_accepts_legacy_bare_filename(tmp_path):
+def test_get_model_accepts_basename_for_nested_model(tmp_path):
     voice_dir = tmp_path / "voices"
     _write_voice(
         voice_dir / "nested",
