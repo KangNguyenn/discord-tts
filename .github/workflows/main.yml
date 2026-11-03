@@ -1,3 +1,4 @@
+
 name: Build Flatpak
 
 on:
@@ -21,24 +22,27 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      # flatpak-builder needs all Python wheels/sdists declared as sources.
-      # Generate that source manifest on the CI machine, not on the user's PC.
       - name: Generate pinned Python dependency sources
         working-directory: packaging/flatpak
         shell: bash
         run: |
           set -euo pipefail
+
           python3 -m venv /tmp/pip-generator-venv
+
           /tmp/pip-generator-venv/bin/pip install --disable-pip-version-check \
             'requirements-parser>=0.11,<1' 'packaging>=23'
+
           curl --fail --location --silent --show-error \
             https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/pip/flatpak-pip-generator.py \
             --output /tmp/flatpak-pip-generator.py
+
           /tmp/pip-generator-venv/bin/python /tmp/flatpak-pip-generator.py \
             --runtime=org.gnome.Sdk//50 \
             --requirements-file=requirements.txt \
             --output=python3-dependencies \
-            --prefer-wheels=numpy,onnxruntime,piper-phonemize,PyNaCl,cffi,cryptography
+            --prefer-wheels=numpy,onnxruntime,piper-phonemize,PyNaCl,cffi,cryptography,davey \
+            --wheel-arches=x86_64
 
       - name: Build Flatpak bundle
         uses: flatpak/flatpak-github-actions/flatpak-builder@v6
