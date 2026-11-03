@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import logging
 import threading
 from typing import Callable
 
@@ -12,6 +14,9 @@ from discord_tts.config import AppConfig
 from discord_tts.services.speech_controller import SpeechController
 from discord_tts.storage.database import Database
 from discord_tts.tts.engine import PiperEngine
+
+
+logger = logging.getLogger(__name__)
 
 
 class DiscordService:
@@ -43,7 +48,9 @@ class DiscordService:
 
     def start(self, token: str) -> None:
         if self.is_running:
+            logger.warning("Ignoring start request: Discord bot is already running")
             return
+        logger.info("Starting Discord bot worker thread")
         self._token = token
         self._stopping.clear()
         self._ready.clear()
@@ -56,9 +63,24 @@ class DiscordService:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         self.loop = loop
+
+        def handle_asyncio_exception(_loop, context):
+            error = context.get("exception")
+            if error:
+                logger.error(
+                    "Unhandled exception in Discord asyncio loop: %s",
+                    context.get("message", "no message"),
+                    exc_info=(type(error), error, error.__traceback__),
+                )
+            else:
+                logger.error("Unhandled asyncio loop error: %s", context)
+
+        loop.set_exception_handler(handle_asyncio_exception)
+        logger.info("Discord asyncio loop started")
         try:
             loop.run_until_complete(self._run_bot())
         except Exception as exc:
+            logger.exception("Discord bot task terminated with an exception")
             self.event_callback("connection_error", {"message": str(exc)})
         finally:
             pending = asyncio.all_tasks(loop)
@@ -67,6 +89,7 @@ class DiscordService:
             if pending:
                 loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             loop.close()
+            logger.info("Discord asyncio loop closed")
             self.loop = None
             self.bot = None
             self.speech = None
@@ -83,6 +106,10 @@ class DiscordService:
 
         bot = commands.Bot(command_prefix="!", intents=intents)
         self.bot = bot
+        logger.info(
+            "Created Discord client (voice intent=%s, guilds intent=%s)",
+            intents.voice_states, intents.guilds,
+        )
         self.speech = SpeechController(
             asyncio.get_running_loop(),
             self._voice_client,
@@ -93,6 +120,11 @@ class DiscordService:
 
         @bot.event
         async def on_ready() -> None:
+            logger.info(
+                "Discord READY: user=%s id=%s guild_count=%d",
+                bot.user, getattr(bot.user, "id", None), len(bot.guilds),
+            )
+            logger.info("Native Opus currently loaded: %s", discord.opus.is_loaded())
             if bot.user:
                 self.event_callback(
                     "connected",
@@ -107,10 +139,12 @@ class DiscordService:
 
         @bot.event
         async def on_disconnect() -> None:
+            logger.warning("Discord gateway disconnected; discord.py will attempt reconnect")
             self.event_callback("reconnecting", {"message": "Mất kết nối Discord, đang thử kết nối lại…"})
 
         @bot.event
         async def on_resumed() -> None:
+            logger.info("Discord gateway session resumed")
             self.event_callback("connected", {"username": str(bot.user or "Bot")})
             self._publish_guilds()
 
@@ -275,12 +309,21 @@ class DiscordService:
         return guild.voice_client if guild else None
 
     async def _join_channel(self, channel: discord.VoiceChannel | discord.StageChannel) -> discord.VoiceClient:
+        logger.info(
+            "Joining voice channel: guild=%s (%s), channel=%s (%s)",
+            channel.guild.name, channel.guild.id, channel.name, channel.id,
+        )
         existing = channel.guild.voice_client
         if existing and existing.is_connected():
             if existing.channel and existing.channel.id == channel.id:
                 return existing
             return await existing.move_to(channel)
-        return await channel.connect()
+        voice_client = await channel.connect()
+        logger.info(
+            "Voice connect completed: connected=%s channel=%s voice_client=%r",
+            voice_client.is_connected(), getattr(voice_client.channel, "name", None), voice_client,
+        )
+        return voice_client
 
     def join_selected_channel(self, guild_id: int, channel_id: int) -> None:
         self._submit(self._join_selected_channel(guild_id, channel_id))
@@ -291,12 +334,18 @@ class DiscordService:
             channel = guild.get_channel(channel_id) if guild else None
             if channel is None or not isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
                 raise RuntimeError("Không tìm thấy voice channel đã chọn.")
-            await self._join_channel(channel)
+            voice_client = await self._join_channel(channel)
+            logger.info(
+                "Voice joined successfully: connected=%s playing=%s channel=%s",
+                voice_client.is_connected(), voice_client.is_playing(),
+                getattr(voice_client.channel, "name", None),
+            )
             self.config.guild_id = guild_id
             self.config.voice_channel_id = channel_id
             self.config.save()
             self.event_callback("voice_joined", {"channel": channel.name, "guild_id": guild_id})
         except Exception as exc:
+            logger.exception("Failed to join selected voice channel")
             self.event_callback("voice_error", {"message": str(exc)})
 
     def leave_voice(self) -> None:
@@ -304,6 +353,7 @@ class DiscordService:
 
     async def _leave_voice(self) -> None:
         voice = self._voice_client(self.config.guild_id)
+        logger.info("Leaving voice: voice_client=%r", voice)
         if voice and voice.is_connected():
             await voice.disconnect(force=True)
         self.event_callback("voice_left", {})
@@ -312,6 +362,10 @@ class DiscordService:
         self._submit(self._speak(text, language, source))
 
     async def _speak(self, text: str, language: str, source: str) -> None:
+        logger.info(
+            "Speech requested: source=%s language=%s guild_id=%s text_length=%d",
+            source, language, self.config.guild_id, len(text),
+        )
         if not self.speech:
             self.event_callback("speech_error", {"source": source, "message": "Discord bot chưa sẵn sàng."})
             return
@@ -342,7 +396,17 @@ class DiscordService:
 
     def _submit(self, coroutine) -> None:
         if self.loop and self.is_running:
-            asyncio.run_coroutine_threadsafe(coroutine, self.loop)
+            future = asyncio.run_coroutine_threadsafe(coroutine, self.loop)
+
+            def log_future_result(completed):
+                try:
+                    completed.result()
+                except concurrent.futures.CancelledError:
+                    logger.debug("Submitted Discord coroutine was cancelled")
+                except Exception:
+                    logger.exception("Submitted Discord coroutine failed")
+
+            future.add_done_callback(log_future_result)
         else:
             if asyncio.iscoroutine(coroutine):
                 coroutine.close()
@@ -350,7 +414,9 @@ class DiscordService:
 
     def shutdown(self) -> None:
         if not self.loop or not self.is_running:
+            logger.debug("Discord shutdown requested while bot is not running")
             return
+        logger.info("Shutting down Discord bot")
         self._stopping.set()
         if self.bot:
             asyncio.run_coroutine_threadsafe(self.bot.close(), self.loop)
