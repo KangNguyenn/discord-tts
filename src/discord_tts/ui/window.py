@@ -743,6 +743,272 @@ class MainWindow(Gtk.ApplicationWindow):
         dialog.connect("response", save_settings)
         dialog.present()
 
+    def _voice_button_label(self, model_id: str) -> str:
+        model = self.engine.get_model(model_id)
+        if model:
+            return model.display_name
+        return f"Missing model: {Path(model_id).name}" if model_id else "Chọn model"
+
+    def _open_voice_directory(self, *_args) -> None:
+        try:
+            VOICE_DIR.mkdir(parents=True, exist_ok=True)
+            Gio.AppInfo.launch_default_for_uri(VOICE_DIR.resolve().as_uri(), None)
+        except Exception as exc:
+            logger.exception("Could not open Piper model directory")
+            self._append_bubble(
+                f"Không mở được thư mục model: {exc}", "system", "vi", "System"
+            )
+
+    def _open_voice_picker(
+        self, _button: Gtk.Button, context: str, model_button: Gtk.Button
+    ) -> None:
+        fields = {
+            "app": ("app_voice_model", "app_speaker_id"),
+            "discord": ("discord_voice_model", "discord_speaker_id"),
+            "preview": ("preview_voice_model", "preview_speaker_id"),
+        }
+        if context not in fields:
+            return
+        model_field, speaker_field = fields[context]
+        current_model_id = getattr(self.config, model_field)
+        current_speaker_id = getattr(self.config, speaker_field)
+        models = self.engine.list_models()
+
+        dialog = Gtk.Dialog(title="Chọn voice model", transient_for=self, modal=True)
+        dialog.set_default_size(700, 540)
+        header = Gtk.HeaderBar()
+        header_title = Gtk.Label(label="Voice models")
+        header_title.add_css_class("title")
+        header.set_title_widget(header_title)
+        folder_button = Gtk.Button.new_from_icon_name("folder-open-symbolic")
+        folder_button.set_tooltip_text("Mở thư mục chứa model Piper")
+        folder_button.connect("clicked", self._open_voice_directory)
+        header.pack_end(folder_button)
+        dialog.set_titlebar(header)
+        dialog.add_button("Hủy", Gtk.ResponseType.CANCEL)
+        use_button = dialog.add_button("Sử dụng model", Gtk.ResponseType.OK)
+        use_button.set_sensitive(bool(models))
+
+        content = dialog.get_content_area()
+        content.set_spacing(10)
+        content.set_margin_top(12)
+        content.set_margin_bottom(12)
+        content.set_margin_start(14)
+        content.set_margin_end(14)
+
+        note = Gtk.Label(
+            label="Chọn model bằng radio. Với model nhiều speaker, chọn speaker ngay bên dưới."
+        )
+        note.set_wrap(True)
+        note.set_xalign(0)
+        note.add_css_class("dim-label")
+        content.append(note)
+
+        selected_model = {"id": ""}
+        speaker_states: dict[str, dict[str, int]] = {}
+        speaker_rows: dict[str, Gtk.Widget] = {}
+        speaker_dropdowns: dict[str, Gtk.DropDown] = {}
+
+        if not models:
+            empty = Gtk.Label(
+                label=(
+                    "Chưa tìm thấy model hợp lệ. Hãy chép cả hai file .onnx và "
+                    ".onnx.json vào thư mục voices, sau đó mở lại bảng này."
+                )
+            )
+            empty.set_wrap(True)
+            empty.set_xalign(0)
+            empty.set_margin_top(18)
+            empty.set_margin_bottom(18)
+            content.append(empty)
+        else:
+            current_info = self.engine.get_model(current_model_id)
+            initial_id = current_info.model_id if current_info else models[0].model_id
+            selected_model["id"] = initial_id
+            rows_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            first_radio: Gtk.CheckButton | None = None
+
+            for model in models:
+                saved_speaker = (
+                    current_speaker_id
+                    if model.model_id == initial_id
+                    else model.default_speaker_id
+                )
+                if not 0 <= int(saved_speaker) < model.num_speakers:
+                    saved_speaker = model.default_speaker_id
+                speaker_state = {"speaker_id": int(saved_speaker)}
+                speaker_states[model.model_id] = speaker_state
+
+                card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+                card.add_css_class("top-card")
+                card.set_margin_start(2)
+                card.set_margin_end(2)
+                card.set_margin_top(2)
+                card.set_margin_bottom(2)
+
+                top_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+                radio = Gtk.CheckButton()
+                if first_radio is not None:
+                    radio.set_group(first_radio)
+                else:
+                    first_radio = radio
+                radio.set_active(model.model_id == initial_id)
+
+                details = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+                details.set_hexpand(True)
+                name = Gtk.Label(label=model.display_name)
+                name.set_xalign(0)
+                name.set_ellipsize(3)
+                name.add_css_class("heading")
+                details.append(name)
+
+                quality = model.quality.replace("_", " ").title()
+                language = Gtk.Label(label=f"{model.language_name} · {quality}")
+                language.set_xalign(0)
+                language.add_css_class("dim-label")
+                details.append(language)
+
+                stats = f"{model.sample_rate:,} Hz" if model.sample_rate else "Sample rate: —"
+                stats += f" · {model.num_speakers} speaker(s)"
+                metadata = Gtk.Label(label=stats)
+                metadata.set_xalign(0)
+                metadata.add_css_class("dim-label")
+                details.append(metadata)
+
+                play_button = Gtk.Button.new_from_icon_name("media-playback-start-symbolic")
+                play_button.set_tooltip_text("Nghe thử model và speaker này")
+                play_button.connect(
+                    "clicked", self._preview_voice_model,
+                    model, speaker_state, preview_status_placeholder := Gtk.Label(),
+                    stop_placeholder := Gtk.Button.new_from_icon_name("media-playback-stop-symbolic"),
+                    self.config.tts_speed, self.config.tts_volume,
+                )
+                # The shared preview controls are added below; all row play buttons
+                # point to the same status and stop controls.
+                play_button.set_sensitive(True)
+                top_row.append(radio)
+                top_row.append(details)
+                top_row.append(play_button)
+                card.append(top_row)
+
+                speaker_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+                speaker_row.set_margin_start(36)
+                speaker_label = Gtk.Label(label="Speaker")
+                speaker_label.add_css_class("dim-label")
+                speaker_row.append(speaker_label)
+                if model.num_speakers > 1:
+                    choices = [name for name, _speaker_id in model.speakers]
+                    dropdown = Gtk.DropDown.new_from_strings(choices)
+                    dropdown.set_hexpand(True)
+                    selected_index = next(
+                        (
+                            index for index, (_speaker_name, speaker_id) in enumerate(model.speakers)
+                            if speaker_id == speaker_state["speaker_id"]
+                        ),
+                        0,
+                    )
+                    dropdown.set_selected(selected_index)
+                    dropdown.connect(
+                        "notify::selected",
+                        lambda widget, _pspec, m=model, state=speaker_state: state.update(
+                            speaker_id=m.speakers[widget.get_selected()][1]
+                            if widget.get_selected() < len(m.speakers)
+                            else m.default_speaker_id
+                        ),
+                    )
+                    speaker_row.append(dropdown)
+                    speaker_dropdowns[model.model_id] = dropdown
+                else:
+                    speaker_row.append(Gtk.Label(label="Chỉ có một speaker"))
+                speaker_row.set_visible(
+                    model.model_id == initial_id and model.num_speakers > 1
+                )
+                speaker_rows[model.model_id] = speaker_row
+                card.append(speaker_row)
+
+                def on_radio_toggled(
+                    radio_button, model_key=model.model_id, model_item=model
+                ):
+                    if not radio_button.get_active():
+                        return
+                    selected_model["id"] = model_key
+                    for key, row in speaker_rows.items():
+                        row.set_visible(
+                            key == model_key
+                            and next(item for item in models if item.model_id == key).num_speakers > 1
+                        )
+
+                radio.connect("toggled", on_radio_toggled)
+                rows_box.append(card)
+                rows_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+            scroll = Gtk.ScrolledWindow()
+            scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            scroll.set_min_content_height(260)
+            scroll.set_vexpand(True)
+            scroll.set_child(rows_box)
+            content.append(scroll)
+
+        preview_status = Gtk.Label(label="Nhấn nút Play để nghe thử model.")
+        preview_status.set_wrap(True)
+        preview_status.set_xalign(0)
+        preview_status.add_css_class("dim-label")
+        preview_controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        preview_controls.append(preview_status)
+        preview_status.set_hexpand(True)
+        preview_stop_button = Gtk.Button.new_from_icon_name("media-playback-stop-symbolic")
+        preview_stop_button.set_tooltip_text("Dừng nghe thử")
+        preview_stop_button.set_sensitive(False)
+        preview_controls.append(preview_stop_button)
+        content.append(preview_controls)
+
+        # Connect row preview buttons after building shared controls.
+        if models:
+            child = rows_box.get_first_child()
+            index = 0
+            while child:
+                if isinstance(child, Gtk.Box) and child.get_first_child() is not None:
+                    top_row = child.get_first_child()
+                    # The last child in each model row is its Play button.
+                    play_button = top_row.get_last_child()
+                    model = models[index]
+                    state = speaker_states[model.model_id]
+                    play_button.disconnect_by_func(self._preview_voice_model) if False else None
+                    play_button.connect(
+                        "clicked", self._preview_voice_model,
+                        model, state, preview_status, preview_stop_button,
+                        self.config.tts_speed, self.config.tts_volume,
+                    )
+                    index += 1
+                child = child.get_next_sibling()
+
+        preview_stop_button.connect(
+            "clicked", self._stop_tts_preview_from_settings, preview_status
+        )
+
+        def on_response(_dialog, response):
+            self._stop_tts_preview()
+            if response == Gtk.ResponseType.OK and selected_model["id"]:
+                model_id = selected_model["id"]
+                model = self.engine.get_model(model_id)
+                if model is not None:
+                    speaker_id = speaker_states[model_id]["speaker_id"]
+                    setattr(self.config, model_field, model_id)
+                    setattr(self.config, speaker_field, speaker_id)
+                    self.config.save()
+                    model_button.set_label(self._voice_button_label(model_id))
+                    model_button.set_tooltip_text(
+                        f"{model.display_name} · {model.language_name} · "
+                        f"{model.speaker_name(speaker_id)}"
+                    )
+                    self.footer_status.set_text(
+                        f"Đã chọn voice model: {model.display_name}"
+                    )
+            dialog.destroy()
+
+        dialog.connect("response", on_response)
+        dialog.present()
+
     def _make_scale_row(self, label: str, minimum: float, maximum: float, value: float, suffix: str):
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         title = Gtk.Label(label=label)
@@ -757,44 +1023,63 @@ class MainWindow(Gtk.ApplicationWindow):
         scale.connect("value-changed", lambda widget: value_label.set_text(f"{widget.get_value():.2f}{suffix}"))
         return row, scale
 
-    def _preview_tts(
+    def _preview_text_for_model(self, model) -> str:
+        family = model.language_code.lower().replace("-", "_").split("_", 1)[0]
+        samples = {
+            "vi": "Xin chào! Đây là câu nghe thử cho giọng đọc đang được chọn.",
+            "en": "Hello! This is a preview of the selected voice.",
+            "de": "Hallo! Dies ist eine kurze Vorschau der ausgewählten Stimme.",
+            "fr": "Bonjour ! Ceci est un aperçu de la voix sélectionnée.",
+            "es": "¡Hola! Esta es una prueba de la voz seleccionada.",
+            "it": "Ciao! Questa è un'anteprima della voce selezionata.",
+            "ja": "こんにちは。選択した音声のサンプルです。",
+            "zh": "你好，这是所选语音的试听。",
+            "ko": "안녕하세요. 선택한 음성의 미리 듣기입니다.",
+            "pt": "Olá! Esta é uma prévia da voz selecionada.",
+            "ru": "Здравствуйте! Это пример выбранного голоса.",
+        }
+        return samples.get(family, "Hello! This is a preview of the selected voice.")
+
+    def _preview_voice_model(
         self,
         button: Gtk.Button,
-        text_entry: Gtk.Entry,
-        language_dropdown: Gtk.DropDown,
-        speed_scale: Gtk.Scale,
-        volume_scale: Gtk.Scale,
+        model,
+        speaker_state: dict,
         status_label: Gtk.Label,
         stop_button: Gtk.Button,
+        speed: float | None = None,
+        volume: float | None = None,
     ) -> None:
-        text = text_entry.get_text().strip()
-        if not text:
-            status_label.set_text("Hãy nhập nội dung cần nghe thử.")
-            return
+        speaker_id = int(speaker_state.get("speaker_id", model.default_speaker_id))
+        text = self._preview_text_for_model(model)
 
-        # A preview only synthesizes and plays a local WAV; it never contacts Discord.
+        # Preview is local-only and reuses the same Piper/WAV/GTK playback path.
         self._stop_tts_preview()
         generation = self._preview_generation
-        language = "en" if language_dropdown.get_selected() == 1 else "vi"
-        speed = speed_scale.get_value()
-        volume = volume_scale.get_value()
+        speed = self.config.tts_speed if speed is None else speed
+        volume = self.config.tts_volume if volume is None else volume
         self._preview_button = button
         self._preview_stop_button = stop_button
         self._preview_status = status_label
         stop_button.set_sensitive(True)
-        self._preview_status.set_text(
-            f"Đang tổng hợp bằng model {self.engine.model_id(language)}…"
-        )
         button.set_sensitive(False)
+        speaker_label = (
+            f" · {model.speaker_name(speaker_id)}" if model.num_speakers > 1 else ""
+        )
+        status_label.set_text(
+            f"Đang tổng hợp {model.display_name}{speaker_label}…"
+        )
 
         def worker() -> None:
             wav_path: Path | None = None
             try:
-                wav_path = self.engine.synthesize(text, language, speed, volume)
+                wav_path = self.engine.synthesize(
+                    text, model.model_id, speed, volume, speaker_id
+                )
                 logger.info(
-                    "TTS preview synthesized: generation=%d language=%s model=%s "
+                    "TTS preview synthesized: generation=%d model=%s speaker_id=%d "
                     "wav=%s size=%d",
-                    generation, language, self.engine.model_id(language), wav_path,
+                    generation, model.model_id, speaker_id, wav_path,
                     wav_path.stat().st_size if wav_path.exists() else -1,
                 )
                 GLib.idle_add(self._start_tts_preview, generation, wav_path)
@@ -805,6 +1090,26 @@ class MainWindow(Gtk.ApplicationWindow):
                 GLib.idle_add(self._tts_preview_failed, generation, str(exc))
 
         threading.Thread(target=worker, name="tts-preview", daemon=True).start()
+
+    def _preview_current_model(
+        self,
+        button: Gtk.Button,
+        status_label: Gtk.Label,
+        stop_button: Gtk.Button,
+        speed_scale: Gtk.Scale,
+        volume_scale: Gtk.Scale,
+    ) -> None:
+        model = self.engine.get_model(self.config.preview_voice_model)
+        if model is None:
+            status_label.set_text(
+                "Không tìm thấy model. Hãy chép file .onnx và .onnx.json vào thư mục voices."
+            )
+            return
+        speaker_state = {"speaker_id": self.config.preview_speaker_id}
+        self._preview_voice_model(
+            button, model, speaker_state, status_label, stop_button,
+            speed_scale.get_value(), volume_scale.get_value(),
+        )
 
     def _start_tts_preview(self, generation: int, wav_path: Path) -> bool:
         if generation != self._preview_generation or self._preview_button is None:
@@ -926,22 +1231,6 @@ class MainWindow(Gtk.ApplicationWindow):
     def _stop_tts_preview_from_settings(self, _button, status_label: Gtk.Label) -> None:
         self._stop_tts_preview()
         status_label.set_text("Đã dừng nghe thử.")
-
-    def _download_voice(self, _button, language: str, status_label: Gtk.Label) -> None:
-        status_label.set_text(f"Đang tải model {language.upper()}…")
-
-        def worker():
-            try:
-                self.engine.download_voice(language)
-                message = f"Đã cài voice {language.upper()}. Có thể sử dụng offline."
-                ok = True
-            except Exception as exc:
-                message = str(exc)
-                ok = False
-            GLib.idle_add(status_label.set_text, message)
-            if ok:
-                GLib.idle_add(self.footer_status.set_text, message)
-        threading.Thread(target=worker, daemon=True).start()
 
     def _notify(self, title: str, body: str) -> None:
         notification = Gio.Notification.new(title)
