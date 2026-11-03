@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
+import os
 import sys
+import threading
 
 import gi
 
@@ -66,7 +69,48 @@ class DiscordTTSApplication(Gtk.Application):
         Gtk.Application.do_shutdown(self)
 
 
+def _configure_logging() -> None:
+    level_name = os.environ.get("DISCORD_TTS_LOG_LEVEL", "DEBUG").upper()
+    level = getattr(logging, level_name, logging.DEBUG)
+    logging.basicConfig(
+        level=level,
+        stream=sys.stderr,
+        force=True,
+        format="%(asctime)s %(levelname)-8s [%(name)s] [%(threadName)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    logging.captureWarnings(True)
+
+    # Discord's voice handshake and audio player are the main diagnostic targets.
+    logging.getLogger("discord").setLevel(logging.INFO)
+    logging.getLogger("discord.voice_client").setLevel(logging.DEBUG)
+    logging.getLogger("discord.voice_state").setLevel(logging.DEBUG)
+    logging.getLogger("discord.gateway").setLevel(logging.INFO)
+    logging.getLogger("discord.http").setLevel(logging.WARNING)
+
+    def log_uncaught_exception(exc_type, exc_value, exc_traceback):
+        logging.getLogger("discord_tts").critical(
+            "Uncaught exception on the main thread",
+            exc_info=(exc_type, exc_value, exc_traceback),
+        )
+
+    def log_thread_exception(args):
+        logging.getLogger("discord_tts").critical(
+            "Uncaught exception in thread %s",
+            args.thread.name if args.thread else "<unknown>",
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+
+    sys.excepthook = log_uncaught_exception
+    threading.excepthook = log_thread_exception
+
+
 def main() -> int:
+    _configure_logging()
+    logger = logging.getLogger("discord_tts")
+    logger.info("Starting Discord TTS")
+    logger.info("Python: %s", sys.version.replace("\\n", " "))
+    logger.info("Console logging configured (set DISCORD_TTS_LOG_LEVEL to change verbosity)")
     app = DiscordTTSApplication()
     return app.run(sys.argv)
 
