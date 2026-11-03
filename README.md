@@ -8,10 +8,10 @@ A local-first Linux desktop app for controlling a Discord TTS bot. The UI is wri
 - App chat uses a selectable local Piper model and speaker.
 - New speech interrupts the current playback.
 - Discord `/join`, `/leave`, `/tts`, `/stop`, and `/quick` commands.
-- Optional Discord text-channel reader. It is off by default; choose allowed channels in Settings.
+- Optional Discord text-channel reader. It is off by default; choose allowed channels and its local voice model in Settings.
 - Quick Chat buttons, delete controls, and SQLite history.
 - Bot Token can be entered or changed in the app; it is stored in the local config file with owner-only permissions (`0600`). No Keyring or Secret Service is required.
-- Local Piper model discovery from .onnx/.onnx.json pairs; multi-speaker models support speaker selection.
+- Local Piper model discovery from .onnx/.onnx.json pairs; the shared picker previews models and supports speaker selection.
 - Close hides the window; the app attempts to register a StatusNotifierItem. KDE panels and many Wayland panels support it natively. GNOME needs a tray/AppIndicator extension. Launching the app again should reactivate the existing window.
 
 ## Important setup notes
@@ -89,7 +89,8 @@ The workflow currently targets x86_64. The target Linux system still needs Flatp
 
 ```text
 GTK4 main thread
-  ├── Conversation bubbles + composer
+  ├── Conversation bubbles + model-selecting composer
+  ├── Shared local voice-model picker
   ├── Quick Chat + Settings
   └── GLib idle callbacks
           |
@@ -102,12 +103,12 @@ Discord asyncio thread (discord.py)
 Piper worker thread -> WAV -> 48 kHz stereo PCM -> Discord Opus encoder
 
 SQLite: history + quick messages
-JSON config: settings + Discord Bot Token
+JSON config: per-context model/speaker settings + Discord Bot Token
 ```
 
 ## Known MVP limitations
 
-- Discord message reading uses one configured model/speaker because the sender cannot choose a voice for another person's message. App chat and `/tts` have an explicit language choice.
+- Discord message reading uses one configured model/speaker because the sender cannot choose a voice for another person's message. App chat can choose any installed model. The legacy `/tts`, `!tts`, and Quick Chat language options continue to map Vietnamese/English to their configured default model IDs.
 - The Settings UI exposes speed and volume. Pitch-shifting and per-user voice profiles are not implemented yet.
 - System-tray support is StatusNotifierItem-based. A tray watcher/extension is required; close-to-hide and launcher reactivation are fallbacks.
 - Slash commands are synced globally. Discord may take time to make new global commands visible.
