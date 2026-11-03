@@ -538,12 +538,31 @@ class MainWindow(Gtk.ApplicationWindow):
         )
         explanation.set_wrap(True)
         explanation.set_xalign(0)
-        token_entry = Gtk.PasswordEntry()
+        # Gtk.PasswordEntry is not available in all GTK4 Python bindings
+        # with the Gtk.Entry placeholder API. Use Gtk.Entry with password
+        # visibility disabled, plus an explicit show/hide control.
+        token_entry = Gtk.Entry()
         token_entry.set_placeholder_text("Discord Bot Token")
-        token_entry.set_show_peek_icon(True)
+        token_entry.set_input_purpose(Gtk.InputPurpose.PASSWORD)
+        token_entry.set_visibility(False)
+        token_entry.set_hexpand(True)
         token_entry.set_text(self.config.discord_token)
+
+        token_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        token_row.append(token_entry)
+        visibility_button = Gtk.ToggleButton(label="Hiện")
+        visibility_button.set_tooltip_text("Hiện hoặc ẩn Bot Token")
+
+        def on_token_visibility_toggled(button):
+            visible = button.get_active()
+            token_entry.set_visibility(visible)
+            button.set_label("Ẩn" if visible else "Hiện")
+
+        visibility_button.connect("toggled", on_token_visibility_toggled)
+        token_row.append(visibility_button)
+
         content.append(explanation)
-        content.append(token_entry)
+        content.append(token_row)
 
         def on_response(_dialog, response):
             if response == Gtk.ResponseType.OK:
