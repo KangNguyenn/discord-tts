@@ -6,7 +6,7 @@ from typing import Callable
 
 import discord
 
-from discord_tts.services.audio import WavPCMAudio
+from discord_tts.services.audio import WavPCMAudio, ensure_opus_loaded
 from discord_tts.tts.engine import PiperEngine
 
 
@@ -60,6 +60,9 @@ class SpeechController:
                     {"source": source, "message": "Bot chưa tham gia voice channel."},
                 )
                 return
+
+            # discord.py cannot transmit PCM AudioSources without native libopus.
+            ensure_opus_loaded()
 
             speed, volume = self.settings_provider()
             wav_path = await asyncio.to_thread(
