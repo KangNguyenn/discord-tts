@@ -11,7 +11,6 @@ from discord import app_commands
 
 from discord_tts.config import AppConfig
 from discord_tts.services.speech_controller import SpeechController
-from discord_tts.storage.database import Database
 from discord_tts.tts.engine import PiperEngine
 
 
@@ -24,12 +23,10 @@ class DiscordService:
     def __init__(
         self,
         config: AppConfig,
-        database: Database,
         engine: PiperEngine,
         event_callback: Callable[[str, dict], None],
     ):
         self.config = config
-        self.database = database
         self.engine = engine
         self.event_callback = event_callback
         self.loop: asyncio.AbstractEventLoop | None = None

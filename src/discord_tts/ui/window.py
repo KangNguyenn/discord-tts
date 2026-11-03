@@ -700,7 +700,7 @@ class MainWindow(Gtk.ApplicationWindow):
             return
         if not self.discord:
             self.discord = DiscordService(
-                self.config, self.database, self.engine, self._post_service_event
+                self.config, self.engine, self._post_service_event
             )
         self.connect_button.set_sensitive(False)
         self._set_status("Đang kết nối Discord…", "warning")
