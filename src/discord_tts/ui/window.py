@@ -533,7 +533,7 @@ class MainWindow(Gtk.ApplicationWindow):
         explanation = Gtk.Label(
             label=(
                 "Dán Bot Token từ Discord Developer Portal. Token được lưu cục bộ "
-                "trong config.json của ứng dụng; không cần GNOME Keyring hay Secret Service."
+                "trong config.json riêng của ứng dụng."
             )
         )
         explanation.set_wrap(True)
