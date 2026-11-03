@@ -25,6 +25,7 @@ class AppConfig:
     guild_id: int | None = None
     voice_channel_id: int | None = None
     read_text_channel_ids: list[int] = field(default_factory=list)
+    discord_token: str = ""
     discord_incoming_language: str = "vi"
     tts_speed: float = 1.0
     tts_volume: float = 1.0
