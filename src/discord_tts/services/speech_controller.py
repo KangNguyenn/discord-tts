@@ -162,15 +162,18 @@ class SpeechController:
         )
         return True
 
-    def submit(self, text: str, language: str, guild_id: int | None, source: str) -> None:
+    def submit(
+        self, text: str, model_id: str, guild_id: int | None, source: str,
+        speaker_id: int = 0,
+    ) -> None:
         """Must be called on the Discord asyncio loop."""
         self._generation += 1
         generation = self._generation
         voice_client = self.voice_provider(guild_id)
         logger.info(
-            "Speech queued: generation=%d source=%s language=%s guild=%s "
+            "Speech queued: generation=%d source=%s model=%s speaker_id=%d guild=%s "
             "voice_connected=%s channel=%s text_length=%d",
-            generation, source, language, guild_id,
+            generation, source, model_id, speaker_id, guild_id,
             bool(voice_client and voice_client.is_connected()),
             getattr(getattr(voice_client, "channel", None), "name", None),
             len(text),
@@ -179,7 +182,7 @@ class SpeechController:
             voice_client.stop()
             self.event_callback("speech_interrupted", {"source": source})
         task = self.loop.create_task(
-            self._speak(generation, text, language, guild_id, source)
+            self._speak(generation, text, model_id, speaker_id, guild_id, source)
         )
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
@@ -188,7 +191,8 @@ class SpeechController:
         self,
         generation: int,
         text: str,
-        language: str,
+        model_id: str,
+        speaker_id: int,
         guild_id: int | None,
         source: str,
     ) -> None:
@@ -212,12 +216,12 @@ class SpeechController:
 
             speed, volume = self.settings_provider()
             logger.info(
-                "Piper synthesis starting: generation=%d model=%s speed=%.2f volume=%.2f",
-                generation, self.engine.model_id(language), speed, volume,
+                "Piper synthesis starting: generation=%d model=%s speaker_id=%d speed=%.2f volume=%.2f",
+                generation, self.engine.model_id(model_id), speaker_id, speed, volume,
             )
             synthesis_started = time.monotonic()
             wav_path = await asyncio.to_thread(
-                self.engine.synthesize, text, language, speed, volume
+                self.engine.synthesize, text, model_id, speed, volume, speaker_id
             )
             logger.info(
                 "Piper synthesis completed: generation=%d elapsed=%.2fs wav=%s size=%d",
@@ -308,8 +312,8 @@ class SpeechController:
             raise
         except Exception as exc:
             logger.exception(
-                "Speech pipeline failed: generation=%d source=%s language=%s",
-                generation, source, language,
+                "Speech pipeline failed: generation=%d source=%s model=%s speaker_id=%d",
+                generation, source, model_id, speaker_id,
             )
             self.event_callback(
                 "speech_error", {"source": source, "message": str(exc)}
