@@ -349,16 +349,23 @@ class MainWindow(Gtk.ApplicationWindow):
         self._send_message()
 
     def _delete_quick_chat(self, _button, quick_id: int, title: str) -> None:
-        dialog = Gtk.MessageDialog(
-            transient_for=self,
-            modal=True,
-            message_type=Gtk.MessageType.QUESTION,
-            buttons=Gtk.ButtonsType.NONE,
-            text=f"Xóa Quick Chat “{title}”?",
-        )
-        dialog.set_secondary_text("Shortcut này sẽ bị xóa khỏi danh sách.")
+        # Gtk.MessageDialog.set_secondary_text() is not available in GTK4.
+        dialog = Gtk.Dialog(title="Xóa Quick Chat", transient_for=self, modal=True)
         dialog.add_button("Hủy", Gtk.ResponseType.CANCEL)
         dialog.add_button("Xóa", Gtk.ResponseType.OK)
+
+        content = dialog.get_content_area()
+        content.set_spacing(8)
+        content.set_margin_top(14)
+        content.set_margin_bottom(14)
+        content.set_margin_start(14)
+        content.set_margin_end(14)
+        message = Gtk.Label(
+            label=f"Xóa Quick Chat “{title}”?\\nShortcut này sẽ bị xóa khỏi danh sách."
+        )
+        message.set_wrap(True)
+        message.set_xalign(0)
+        content.append(message)
 
         def on_response(_dialog, response):
             if response == Gtk.ResponseType.OK:
