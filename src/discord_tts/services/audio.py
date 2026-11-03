@@ -121,9 +121,13 @@ class WavPCMAudio(discord.AudioSource):
         packet = stereo.tobytes()
         self._read_count += 1
         if self._read_count <= 2:
+            pcm_float = pcm.astype(np.float32)
+            rms = float(np.sqrt(np.mean(np.square(pcm_float))))
             logger.debug(
-                "Generated PCM packet %d: %d bytes (expected 3840)",
+                "Generated PCM packet %d: %d bytes (expected 3840), "
+                "sample_min=%d sample_max=%d rms=%.1f",
                 self._read_count, len(packet),
+                int(pcm.min()), int(pcm.max()), rms,
             )
         return packet
 
