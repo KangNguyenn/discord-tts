@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes.util
+import logging
 import wave
 from pathlib import Path
 
@@ -8,9 +9,13 @@ import discord
 import numpy as np
 
 
+logger = logging.getLogger(__name__)
+
+
 def ensure_opus_loaded() -> None:
     """Load libopus explicitly before sending PCM audio through discord.py."""
     if discord.opus.is_loaded():
+        logger.debug("discord.py reports Opus already loaded")
         return
 
     candidates = []
@@ -23,9 +28,12 @@ def ensure_opus_loaded() -> None:
     errors = []
     for library in dict.fromkeys(candidates):
         try:
+            logger.debug("Trying to load Opus library: %s", library)
             discord.opus.load_opus(library)
+            logger.info("Loaded native Opus library: %s", library)
             return
         except Exception as exc:
+            logger.warning("Could not load Opus library %s: %s", library, exc)
             errors.append(f"{library}: {exc}")
 
     details = "; ".join(errors) if errors else "ctypes.util.find_library('opus') không tìm thấy thư viện."
@@ -53,6 +61,18 @@ class WavPCMAudio(discord.AudioSource):
         self._channels = self._wav.getnchannels()
         self._sample_width = self._wav.getsampwidth()
         self._sample_rate = self._wav.getframerate()
+        self.channels = self._channels
+        self.sample_width = self._sample_width
+        self.sample_rate = self._sample_rate
+        self._read_count = 0
+        self._logged_eof = False
+        logger.info(
+            "Opening WAV for Discord playback: path=%s channels=%d sample_width=%d "
+            "sample_rate=%d frames=%d duration=%.3fs",
+            path, self._channels, self._sample_width, self._sample_rate,
+            self._wav.getnframes(),
+            self._wav.getnframes() / self._sample_rate if self._sample_rate else 0,
+        )
         if self._sample_width not in (1, 2, 4):
             self._wav.close()
             raise ValueError(f"WAV sample width không được hỗ trợ: {self._sample_width}")
@@ -64,6 +84,12 @@ class WavPCMAudio(discord.AudioSource):
     def read(self) -> bytes:
         raw = self._wav.readframes(self._input_frames)
         if not raw:
+            if not self._logged_eof:
+                logger.info(
+                    "WAV PCM stream reached EOF after %d packets (%s)",
+                    self._read_count, self._wav.getname(),
+                )
+                self._logged_eof = True
             return b""
 
         if self._sample_width == 1:
@@ -91,7 +117,14 @@ class WavPCMAudio(discord.AudioSource):
         resampled = np.interp(target_x, source_x, samples)
         pcm = np.clip(resampled, -32768, 32767).astype("<i2")
         stereo = np.repeat(pcm[:, np.newaxis], 2, axis=1)
-        return stereo.tobytes()
+        packet = stereo.tobytes()
+        self._read_count += 1
+        if self._read_count <= 2:
+            logger.debug(
+                "Generated PCM packet %d: %d bytes (expected 3840)",
+                self._read_count, len(packet),
+            )
+        return packet
 
     def is_opus(self) -> bool:
         return False
@@ -99,5 +132,6 @@ class WavPCMAudio(discord.AudioSource):
     def cleanup(self) -> None:
         try:
             self._wav.close()
+            logger.debug("Closed WAV source after %d PCM packets", self._read_count)
         except Exception:
-            pass
+            logger.exception("Failed to close WAV source")
