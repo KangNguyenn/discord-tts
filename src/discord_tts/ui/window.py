@@ -11,6 +11,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gdk, Gio, GLib, Gtk
 
 from discord_tts.config import APP_NAME, AppConfig, DATA_DIR, HISTORY_DB
+from discord_tts.services.audio import convert_wav_to_discord_pcm_wav
 from discord_tts.services.discord_service import DiscordService
 from discord_tts.storage.database import Database
 from discord_tts.tts.engine import PiperEngine
@@ -690,14 +691,17 @@ class MainWindow(Gtk.ApplicationWindow):
         preview_language = Gtk.DropDown.new_from_strings(["Tiếng Việt", "English"])
         preview_language.set_selected(0)
         preview_language.set_hexpand(True)
-        preview_button = Gtk.Button(label="Nghe thử")
+        preview_button = Gtk.Button(label="Nghe Piper")
         preview_button.set_icon_name("audio-volume-high-symbolic")
         preview_button.add_css_class("suggested-action")
+        preview_discord_button = Gtk.Button(label="Nghe PCM Discord")
+        preview_discord_button.set_icon_name("audio-x-generic-symbolic")
         preview_stop_button = Gtk.Button(label="Dừng")
         preview_stop_button.set_icon_name("media-playback-stop-symbolic")
         preview_stop_button.set_sensitive(False)
         preview_controls.append(preview_language)
         preview_controls.append(preview_button)
+        preview_controls.append(preview_discord_button)
         preview_controls.append(preview_stop_button)
         content.append(preview_controls)
 
@@ -710,7 +714,12 @@ class MainWindow(Gtk.ApplicationWindow):
         preview_button.connect(
             "clicked", self._preview_tts,
             preview_text, preview_language, speed_scale, volume_scale,
-            preview_status, preview_stop_button,
+            preview_status, preview_stop_button, False,
+        )
+        preview_discord_button.connect(
+            "clicked", self._preview_tts,
+            preview_text, preview_language, speed_scale, volume_scale,
+            preview_status, preview_stop_button, True,
         )
         preview_stop_button.connect(
             "clicked", self._stop_tts_preview_from_settings, preview_status,
@@ -766,6 +775,7 @@ class MainWindow(Gtk.ApplicationWindow):
         volume_scale: Gtk.Scale,
         status_label: Gtk.Label,
         stop_button: Gtk.Button,
+        discord_format: bool = False,
     ) -> None:
         text = text_entry.get_text().strip()
         if not text:
@@ -782,8 +792,9 @@ class MainWindow(Gtk.ApplicationWindow):
         self._preview_stop_button = stop_button
         self._preview_status = status_label
         stop_button.set_sensitive(True)
+        format_label = "PCM 48 kHz stereo theo định dạng Discord" if discord_format else "WAV gốc của Piper"
         self._preview_status.set_text(
-            f"Đang tổng hợp bằng model {self.engine.model_id(language)}…"
+            f"Đang tổng hợp bằng model {self.engine.model_id(language)} ({format_label})…"
         )
         button.set_sensitive(False)
 
@@ -791,10 +802,16 @@ class MainWindow(Gtk.ApplicationWindow):
             wav_path: Path | None = None
             try:
                 wav_path = self.engine.synthesize(text, language, speed, volume)
+                if discord_format:
+                    converted_path = convert_wav_to_discord_pcm_wav(wav_path)
+                    wav_path.unlink(missing_ok=True)
+                    wav_path = converted_path
                 logger.info(
                     "TTS preview synthesized: generation=%d language=%s model=%s "
-                    "wav=%s size=%d",
-                    generation, language, self.engine.model_id(language), wav_path,
+                    "format=%s wav=%s size=%d",
+                    generation, language, self.engine.model_id(language),
+                    "discord_pcm_48khz_stereo" if discord_format else "piper_original",
+                    wav_path,
                     wav_path.stat().st_size if wav_path.exists() else -1,
                 )
                 GLib.idle_add(self._start_tts_preview, generation, wav_path)
