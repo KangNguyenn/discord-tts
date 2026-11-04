@@ -728,6 +728,10 @@ class MainWindow(Gtk.ApplicationWindow):
             self.guild_dropdown.set_selected(0)
             selected_id = ids[0]
         self._loading_dropdowns = False
+        selected_guild = self.guilds.get(selected_id) if selected_id else None
+        self.guild_dropdown.set_tooltip_text(
+            selected_guild["name"] if selected_guild else "Discord server"
+        )
         self._update_voice_channels(selected_id)
 
     def _update_voice_channels(self, guild_id: int | None) -> None:
@@ -741,6 +745,13 @@ class MainWindow(Gtk.ApplicationWindow):
             0,
         )
         self.channel_dropdown.set_selected(selected)
+        selected_channel = (
+            self.voice_channels[selected]
+            if selected < len(self.voice_channels) else None
+        )
+        self.channel_dropdown.set_tooltip_text(
+            selected_channel["name"] if selected_channel else "Voice channel"
+        )
 
     def _on_guild_selected(self, dropdown, _pspec) -> None:
         if self._loading_dropdowns:
@@ -750,6 +761,7 @@ class MainWindow(Gtk.ApplicationWindow):
         if index >= len(ids):
             return
         guild_id = ids[index]
+        self.guild_dropdown.set_tooltip_text(self.guilds[guild_id]["name"])
         if self.discord:
             self.discord.set_guild(guild_id)
         self.config.guild_id = guild_id
