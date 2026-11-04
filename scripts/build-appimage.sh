@@ -131,6 +131,10 @@ mkdir -p -- "$(dirname -- "$OUTPUT_FILE")"
 log "Tạo AppImage..."
 ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGETOOL_BIN" "$APPDIR" "$OUTPUT_FILE"
 chmod +x "$OUTPUT_FILE"
+
+log "Kiểm thử AppImage và lần giải nén runtime đầu tiên..."
+APPIMAGE_EXTRACT_AND_RUN=1 DISCORD_TTS_APPIMAGE_SMOKE_TEST=1 "$OUTPUT_FILE"
+
 sha256sum "$OUTPUT_FILE" > "$OUTPUT_FILE.sha256"
 
 log "Hoàn tất:"

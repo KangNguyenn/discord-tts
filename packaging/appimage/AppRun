@@ -103,4 +103,20 @@ if [[ -d "$RUNTIME_DIR/etc/fonts" ]]; then
     export FONTCONFIG_PATH="$RUNTIME_DIR/etc/fonts"
 fi
 
+if [[ "${DISCORD_TTS_APPIMAGE_SMOKE_TEST:-0}" == "1" ]]; then
+    "$RUNTIME_DIR/bin/python" - <<'PY'
+import discord
+import gi
+import numpy
+import onnxruntime
+import piper
+
+gi.require_version("Gtk", "4.0")
+from gi.repository import Gtk
+
+print(f"AppImage runtime smoke test passed: GTK {Gtk.get_major_version()}.{Gtk.get_minor_version()}.{Gtk.get_micro_version()}, NumPy {numpy.__version__}, ONNX Runtime {onnxruntime.__version__}, discord.py {discord.__version__}, Piper loaded")
+PY
+    exit 0
+fi
+
 exec "$RUNTIME_DIR/bin/discord-tts" "$@"
