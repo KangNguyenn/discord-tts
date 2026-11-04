@@ -167,11 +167,11 @@ class SpeechController:
         """Must be called on the Discord asyncio loop."""
         self._generation += 1
         generation = self._generation
+        voice_client = self.voice_provider(guild_id)
         # Mark the shared engine busy before scheduling synthesis so a preview
         # cannot slip in while this request is waiting for its worker thread.
         self.engine.set_speech_busy(True)
         self.event_callback("speech_busy", {"source": source})
-        voice_client = self.voice_provider(guild_id)
         logger.info(
             "Speech queued: generation=%d source=%s model=%s speaker_id=%d guild=%s "
             "voice_connected=%s channel=%s text_length=%d",
