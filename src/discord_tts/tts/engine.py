@@ -290,6 +290,7 @@ class PiperEngine:
         volume: float = 1.0,
         speaker_id: int = 0,
         preview: bool = False,
+        output_dir: Path | None = None,
     ) -> Path:
         text = text.strip()
         if not text:
@@ -338,7 +339,8 @@ class PiperEngine:
                     voice = self._voice
 
                 output = tempfile.NamedTemporaryFile(
-                    prefix="discord-tts-", suffix=".wav", delete=False
+                    prefix="discord-tts-", suffix=".wav", delete=False,
+                    dir=str(output_dir) if output_dir is not None else None,
                 )
                 output_path = Path(output.name)
                 output.close()
