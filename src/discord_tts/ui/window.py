@@ -774,7 +774,6 @@ class MainWindow(Gtk.ApplicationWindow):
             placeholder_text="Ví dụ: 123456789012345678"
         )
         auto_join_user_id_entry.set_input_purpose(Gtk.InputPurpose.DIGITS)
-        auto_join_user_id_entry.set_max_length(20)
         auto_join_user_id_entry.set_text(
             str(self.config.auto_join_user_id)
             if self.config.auto_join_user_id is not None else ""
@@ -907,7 +906,7 @@ class MainWindow(Gtk.ApplicationWindow):
             if raw_auto_join_user_id and (
                 not raw_auto_join_user_id.isascii()
                 or not raw_auto_join_user_id.isdigit()
-                or int(raw_auto_join_user_id) >= 2**64
+                or not 0 < int(raw_auto_join_user_id) < 2**64
             ):
                 auto_join_error_label.set_text(
                     "User ID phải là dãy số Discord hợp lệ, không kèm ký tự khác."
