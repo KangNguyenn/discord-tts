@@ -888,6 +888,9 @@ class MainWindow(Gtk.ApplicationWindow):
                 worker.stop_for_speech()
         elif event == "speech_idle":
             self._speech_busy_signal.clear()
+            worker = self._preview_worker
+            if worker is not None:
+                worker.allow_preview()
         GLib.idle_add(self.handle_service_event, event, payload)
 
 
@@ -1216,6 +1219,8 @@ class MainWindow(Gtk.ApplicationWindow):
             lambda result, generation=picker_generation:
                 self._post_preview_worker_result(generation, result),
         )
+        if self._speech_busy_signal.is_set():
+            self._preview_worker.stop_for_speech()
         models = self.engine.list_models()
         draft = profile.copy()
         dialog = Gtk.Dialog(title="Chọn Voice Model", transient_for=self, modal=True)
@@ -1475,13 +1480,6 @@ class MainWindow(Gtk.ApplicationWindow):
 
         scale.connect("value-changed", on_value_changed)
         return row, scale
-
-    def _stop_tts_preview_from_picker(
-        self, _button, status_label: Gtk.Label
-    ) -> None:
-        self._stop_tts_preview()
-        status_label.set_text("Đã dừng nghe thử.")
-
 
     def _preview_text_for_model(self, model) -> str:
         family = model.language_code.lower().replace("-", "_").split("_", 1)[0]
