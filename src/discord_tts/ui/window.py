@@ -753,6 +753,41 @@ class MainWindow(Gtk.ApplicationWindow):
         content.append(token_row)
 
         content.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        auto_join_section = Gtk.Label(label="Tự động tham gia")
+        auto_join_section.add_css_class("heading")
+        auto_join_section.set_xalign(0)
+        content.append(auto_join_section)
+
+        auto_join_note = Gtk.Label(
+            label="Khi bot kết nối, ứng dụng sẽ tìm voice channel mà User ID này "
+                  "đang ở và tự tham gia. Để trống để tắt tính năng."
+        )
+        auto_join_note.set_wrap(True)
+        auto_join_note.set_xalign(0)
+        auto_join_note.add_css_class("dim-label")
+        content.append(auto_join_note)
+
+        auto_join_user_id_label = Gtk.Label(label="Discord User ID")
+        auto_join_user_id_label.set_xalign(0)
+        content.append(auto_join_user_id_label)
+        auto_join_user_id_entry = Gtk.Entry(
+            placeholder_text="Ví dụ: 123456789012345678"
+        )
+        auto_join_user_id_entry.set_input_purpose(Gtk.InputPurpose.DIGITS)
+        auto_join_user_id_entry.set_max_length(20)
+        auto_join_user_id_entry.set_text(
+            str(self.config.auto_join_user_id)
+            if self.config.auto_join_user_id is not None else ""
+        )
+        content.append(auto_join_user_id_entry)
+
+        auto_join_error_label = Gtk.Label()
+        auto_join_error_label.add_css_class("error")
+        auto_join_error_label.set_xalign(0)
+        auto_join_error_label.set_visible(False)
+        content.append(auto_join_error_label)
+
+        content.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
         activity_section = Gtk.Label(label="Discord Activity")
         activity_section.add_css_class("heading")
         activity_section.set_xalign(0)
@@ -868,9 +903,30 @@ class MainWindow(Gtk.ApplicationWindow):
                 dialog.destroy()
                 return
 
+            raw_auto_join_user_id = auto_join_user_id_entry.get_text().strip()
+            if raw_auto_join_user_id and (
+                not raw_auto_join_user_id.isascii()
+                or not raw_auto_join_user_id.isdigit()
+                or int(raw_auto_join_user_id) >= 2**64
+            ):
+                auto_join_error_label.set_text(
+                    "User ID phải là dãy số Discord hợp lệ, không kèm ký tự khác."
+                )
+                auto_join_error_label.set_visible(True)
+                auto_join_user_id_entry.add_css_class("error")
+                return
+
+            auto_join_user_id = (
+                int(raw_auto_join_user_id) if raw_auto_join_user_id else None
+            )
+            auto_join_error_label.set_visible(False)
+            auto_join_user_id_entry.remove_css_class("error")
+
             old_token = self.config.discord_token
+            old_auto_join_user_id = self.config.auto_join_user_id
             new_token = token_entry.get_text().strip()
             self.config.discord_token = new_token
+            self.config.auto_join_user_id = auto_join_user_id
             self.config.discord_status = status_values[
                 min(status_dropdown.get_selected(), len(status_values) - 1)
             ]
@@ -911,6 +967,8 @@ class MainWindow(Gtk.ApplicationWindow):
                     ).start()
             elif self.discord and self.discord.is_running:
                 self.discord.update_presence()
+                if old_auto_join_user_id != auto_join_user_id:
+                    self.discord.auto_join_configured_user()
             elif new_token:
                 self._start_discord(new_token)
 
