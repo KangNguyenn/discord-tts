@@ -214,9 +214,13 @@ class PreviewWorker:
                         process.join(timeout=0.5)
                     if not process.is_alive():
                         process.close()
-                temp_dir, self._temp_dir = self._temp_dir, None
-                if temp_dir is not None:
-                    shutil.rmtree(temp_dir, ignore_errors=True)
+                # Keep a successful WAV available if the worker exited after
+                # sending its response; it belongs to the parent until playback
+                # finishes or the dialog is closed.
+                if failure_request_id is not None:
+                    temp_dir, self._temp_dir = self._temp_dir, None
+                    if temp_dir is not None:
+                        shutil.rmtree(temp_dir, ignore_errors=True)
         if failure_request_id is not None:
             try:
                 self._result_callback({
