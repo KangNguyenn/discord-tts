@@ -36,6 +36,7 @@ class DiscordService:
         self._token: str | None = None
         self._stopping = threading.Event()
         self._guilds: dict[int, discord.Guild] = {}
+        self._auto_join_attempted_user_id: int | None = None
 
     @property
     def is_running(self) -> bool:
@@ -128,6 +129,7 @@ class DiscordService:
                 )
             self._guilds = {guild.id: guild for guild in bot.guilds}
             self._publish_guilds()
+            await self._auto_join_configured_user()
             # The previous app registered global slash commands. Syncing an
             # empty command tree removes those stale commands from Discord.
             try:
@@ -274,6 +276,71 @@ class DiscordService:
         except Exception as exc:
             logger.exception("Failed to join selected voice channel")
             self.event_callback("voice_error", {"message": str(exc)})
+
+    def auto_join_configured_user(self) -> None:
+        """Re-check the configured user's current voice channel immediately."""
+        self._submit(self._auto_join_configured_user(force=True))
+
+    async def _auto_join_configured_user(self, force: bool = False) -> None:
+        if not self.bot or not self.bot.is_ready():
+            return
+
+        user_id = self.config.auto_join_user_id
+        if user_id is None:
+            self._auto_join_attempted_user_id = None
+            return
+        if not force and self._auto_join_attempted_user_id == user_id:
+            return
+        self._auto_join_attempted_user_id = user_id
+
+        target_channel = None
+        for guild in self.bot.guilds:
+            for channel in guild.channels:
+                if not isinstance(
+                    channel, (discord.VoiceChannel, discord.StageChannel)
+                ):
+                    continue
+                if user_id in channel.voice_states:
+                    target_channel = channel
+                    break
+            if target_channel is not None:
+                break
+
+        if target_channel is None:
+            logger.info(
+                "Auto-join skipped: user_id=%s is not in a voice channel "
+                "in any server shared with the bot",
+                user_id,
+            )
+            return
+
+        try:
+            voice_client = await self._join_channel(target_channel)
+            logger.info(
+                "Auto-joined configured user: user_id=%s guild=%s channel=%s "
+                "connected=%s",
+                user_id, target_channel.guild.id, target_channel.id,
+                voice_client.is_connected(),
+            )
+            self.config.guild_id = target_channel.guild.id
+            self.config.voice_channel_id = target_channel.id
+            self.config.save()
+            self.event_callback(
+                "voice_joined",
+                {
+                    "channel": target_channel.name,
+                    "guild_id": target_channel.guild.id,
+                    "auto_join": True,
+                },
+            )
+        except Exception as exc:
+            logger.exception(
+                "Could not auto-join voice channel for user_id=%s", user_id
+            )
+            self.event_callback(
+                "voice_error",
+                {"message": f"Không thể tự động tham gia voice channel: {exc}"},
+            )
 
     def leave_voice(self) -> None:
         self._submit(self._leave_voice())

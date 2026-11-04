@@ -8,10 +8,11 @@ import threading
 import gi
 
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gdk, Gio, GLib, Gtk
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 
 from discord_tts.config import APP_NAME, AppConfig, VoiceProfile, VOICE_DIR
 from discord_tts.services.discord_service import DiscordService
+from discord_tts.services.preview_worker import PreviewWorker
 from discord_tts.storage.database import Database
 from discord_tts.tts.engine import PiperEngine
 
@@ -38,13 +39,22 @@ class MainWindow(Gtk.ApplicationWindow):
         self._preview_button: Gtk.Button | None = None
         self._preview_stop_button: Gtk.Button | None = None
         self._preview_status: Gtk.Label | None = None
+        self._preview_buttons: list[Gtk.Button] = []
+        self._preview_worker: PreviewWorker | None = None
+        self._voice_picker_generation = 0
+        self._preview_request_id = 0
+        self._preview_synthesizing = False
+        self._speech_busy = False
+        self._speech_busy_signal = threading.Event()
 
-        self.set_default_size(760, 760)
         self.set_size_request(560, 600)
         self._load_css()
         self._build_ui()
         self._load_history()
         self._load_quick_chat()
+        # Set the initial geometry after all content is populated. Long
+        # content is constrained by the scroll areas below, not by the window.
+        self.set_default_size(760, 760)
         self.connect("close-request", self._on_close_request)
 
     def set_discord_service(self, service: DiscordService) -> None:
@@ -98,6 +108,13 @@ class MainWindow(Gtk.ApplicationWindow):
         self.status_text = Gtk.Label(label="Chưa kết nối Discord")
         self.status_text.set_xalign(0)
         self.status_text.set_hexpand(True)
+        self.status_text.set_ellipsize(Pango.EllipsizeMode.END)
+        self.status_text.set_wrap(True)
+        self.status_text.set_wrap_mode(Pango.WrapMode.CHAR)
+        if hasattr(self.status_text, "set_natural_wrap_mode"):
+            self.status_text.set_natural_wrap_mode(Pango.WrapMode.CHAR)
+        self.status_text.set_lines(1)
+        self.status_text.set_max_width_chars(40)
         status_row.append(self.status_dot)
         status_row.append(self.status_text)
         self.connection_hint = Gtk.Label(label="Bot chạy trên máy này · TTS offline")
@@ -146,6 +163,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self.speaking_label = Gtk.Label(label="")
         self.speaking_label.add_css_class("dim-label")
         chat_header.append(self.speaking_label)
+        self.clear_history_button = Gtk.Button.new_from_icon_name("user-trash-symbolic")
+        self.clear_history_button.add_css_class("flat")
+        self.clear_history_button.set_tooltip_text("Xóa toàn bộ lịch sử Conversation")
+        self.clear_history_button.connect("clicked", self._confirm_clear_history)
+        chat_header.append(self.clear_history_button)
         root.append(chat_header)
 
         self.chat_list = Gtk.ListBox()
@@ -153,6 +175,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self.chat_list.add_css_class("chat-list")
         self.chat_scroll = Gtk.ScrolledWindow()
         self.chat_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        # Keep chat history inside its viewport instead of propagating the
+        # natural height of every message to the main window.
+        self.chat_scroll.set_propagate_natural_height(False)
+        self.chat_scroll.set_propagate_natural_width(False)
+        self.chat_scroll.set_hexpand(True)
         self.chat_scroll.set_vexpand(True)
         self.chat_scroll.set_child(self.chat_list)
         self.chat_scroll.add_css_class("top-card")
@@ -173,11 +200,27 @@ class MainWindow(Gtk.ApplicationWindow):
         self.quick_box = Gtk.FlowBox()
         self.quick_box.set_selection_mode(Gtk.SelectionMode.NONE)
         self.quick_box.set_max_children_per_line(4)
-        self.quick_box.set_min_children_per_line(2)
+        self.quick_box.set_min_children_per_line(1)
         self.quick_box.set_row_spacing(5)
         self.quick_box.set_column_spacing(5)
+        # Keep each shortcut at its natural one-line size. Homogeneous FlowBox
+        # cells can otherwise stretch short rows to fill the whole viewport.
         self.quick_box.set_homogeneous(False)
-        root.append(self.quick_box)
+        self.quick_box.set_hexpand(True)
+
+        # Reserve a stable-height area for shortcuts. Extra rows scroll here
+        # rather than increasing the main window's natural height.
+        self.quick_scroll = Gtk.ScrolledWindow()
+        self.quick_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.quick_scroll.set_propagate_natural_height(False)
+        self.quick_scroll.set_propagate_natural_width(False)
+        self.quick_scroll.set_min_content_height(88)
+        self.quick_scroll.set_max_content_height(88)
+        self.quick_scroll.set_hexpand(True)
+        self.quick_scroll.set_vexpand(False)
+        self.quick_scroll.set_child(self.quick_box)
+        self.quick_scroll.add_css_class("quick-chat-scroll")
+        root.append(self.quick_scroll)
 
         # Chat composer: Enter sends; Shift+Enter inserts a newline.
         composer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=7)
@@ -187,10 +230,9 @@ class MainWindow(Gtk.ApplicationWindow):
         lang_label = Gtk.Label(label="Voice")
         lang_label.add_css_class("dim-label")
         top_row.append(lang_label)
-        self.app_voice_button = Gtk.Button(
-            label=self._voice_button_label(self.config.direct_chat.model_id)
+        self.app_voice_button = self._make_voice_button(
+            self.config.direct_chat.model_id
         )
-        self.app_voice_button.set_icon_name("pan-down-symbolic")
         self.app_voice_button.set_tooltip_text("Chọn model, speaker, speed và volume cho Direct Chat")
         self.app_voice_button.connect(
             "clicked",
@@ -221,7 +263,8 @@ class MainWindow(Gtk.ApplicationWindow):
         input_scroll = Gtk.ScrolledWindow()
         input_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         input_scroll.set_min_content_height(66)
-        input_scroll.set_max_content_height(138)
+        input_scroll.set_max_content_height(66)
+        input_scroll.set_propagate_natural_height(False)
         input_scroll.set_child(self.input_view)
         input_scroll.set_hexpand(True)
         input_overlay = Gtk.Overlay()
@@ -235,7 +278,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.input_placeholder.set_can_target(False)
         input_overlay.add_overlay(self.input_placeholder)
         text_row.append(input_overlay)
-        self.send_button = Gtk.Button.new_from_icon_name("paper-plane-symbolic")
+        self.send_button = Gtk.Button.new_from_icon_name("mail-send-symbolic")
         self.send_button.add_css_class("suggested-action")
         self.send_button.add_css_class("circular")
         self.send_button.set_valign(Gtk.Align.END)
@@ -250,6 +293,13 @@ class MainWindow(Gtk.ApplicationWindow):
         self.footer_status.add_css_class("dim-label")
         self.footer_status.set_xalign(0)
         self.footer_status.set_hexpand(True)
+        self.footer_status.set_ellipsize(Pango.EllipsizeMode.END)
+        self.footer_status.set_wrap(True)
+        self.footer_status.set_wrap_mode(Pango.WrapMode.CHAR)
+        if hasattr(self.footer_status, "set_natural_wrap_mode"):
+            self.footer_status.set_natural_wrap_mode(Pango.WrapMode.CHAR)
+        self.footer_status.set_lines(1)
+        self.footer_status.set_max_width_chars(64)
         footer.append(self.footer_status)
         self.stop_button = Gtk.Button(label="Stop")
         self.stop_button.set_icon_name("media-playback-stop-symbolic")
@@ -300,16 +350,26 @@ class MainWindow(Gtk.ApplicationWindow):
         row = Gtk.ListBoxRow()
         row.add_css_class("chat-row")
         line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
-        line.set_halign(Gtk.Align.END if direction == "outgoing" else Gtk.Align.START)
+        line.set_hexpand(True)
+        line.set_halign(Gtk.Align.FILL)
         bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         bubble.add_css_class("chat-bubble")
         bubble.add_css_class(direction)
+        bubble.set_hexpand(False)
+        bubble.set_halign(
+            Gtk.Align.END if direction == "outgoing" else Gtk.Align.START
+        )
         message = Gtk.Label(label=text)
         message.set_wrap(True)
-        message.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        message.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        # WORD_CHAR wraps during allocation, but GTK may still measure a
+        # long unbroken token as one word for the natural width request.
+        # CHAR natural wrapping keeps that measurement bounded as well.
+        if hasattr(message, "set_natural_wrap_mode"):
+            message.set_natural_wrap_mode(Pango.WrapMode.CHAR)
         message.set_xalign(0)
         message.set_selectable(True)
-        message.set_max_width_chars(64)
+        message.set_max_width_chars(48)
         bubble.append(message)
         try:
             time = datetime.fromisoformat(timestamp).astimezone().strftime("%H:%M") if timestamp else datetime.now().strftime("%H:%M")
@@ -318,9 +378,25 @@ class MainWindow(Gtk.ApplicationWindow):
         language_tag = (language or "unknown").replace("-", "_").split("_", 1)[0].upper()
         meta = Gtk.Label(label=f"{author} · {language_tag} · {time}")
         meta.set_xalign(1 if direction == "outgoing" else 0)
+        meta.set_ellipsize(Pango.EllipsizeMode.END)
+        meta.set_wrap(True)
+        meta.set_wrap_mode(Pango.WrapMode.CHAR)
+        if hasattr(meta, "set_natural_wrap_mode"):
+            meta.set_natural_wrap_mode(Pango.WrapMode.CHAR)
+        meta.set_lines(1)
+        meta.set_max_width_chars(32)
         meta.add_css_class("chat-meta")
         bubble.append(meta)
-        line.append(bubble)
+        # Gtk.Box packs children from the start; halign on a natural-width
+        # child does not create the expanding space needed to push it right.
+        spacer = Gtk.Box()
+        spacer.set_hexpand(True)
+        if direction == "outgoing":
+            line.append(spacer)
+            line.append(bubble)
+        else:
+            line.append(bubble)
+            line.append(spacer)
         row.set_child(line)
         self.chat_list.append(row)
         GLib.idle_add(self._scroll_chat_to_bottom)
@@ -336,6 +412,39 @@ class MainWindow(Gtk.ApplicationWindow):
             author = "You" if direction == "outgoing" else item["source"].title()
             self._append_bubble(item["text"], direction, item["language"], author, item["created_at"])
 
+    def _confirm_clear_history(self, *_args) -> None:
+        dialog = Gtk.Dialog(
+            title="Xóa lịch sử Conversation", transient_for=self, modal=True
+        )
+        dialog.add_button("Hủy", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Xóa lịch sử", Gtk.ResponseType.OK)
+        content = dialog.get_content_area()
+        content.set_spacing(8)
+        content.set_margin_top(14)
+        content.set_margin_bottom(14)
+        content.set_margin_start(14)
+        content.set_margin_end(14)
+        message = Gtk.Label(
+            label="Xóa toàn bộ lịch sử Conversation?\nHành động này không thể hoàn tác."
+        )
+        message.set_wrap(True)
+        message.set_xalign(0)
+        content.append(message)
+
+        def on_response(_dialog, response):
+            if response == Gtk.ResponseType.OK:
+                self.database.clear_history()
+                child = self.chat_list.get_first_child()
+                while child is not None:
+                    next_child = child.get_next_sibling()
+                    self.chat_list.remove(child)
+                    child = next_child
+                self.footer_status.set_text("Đã xóa lịch sử Conversation.")
+            dialog.destroy()
+
+        dialog.connect("response", on_response)
+        dialog.present()
+
     def _load_quick_chat(self) -> None:
         child = self.quick_box.get_first_child()
         while child:
@@ -347,10 +456,27 @@ class MainWindow(Gtk.ApplicationWindow):
             item = dict(row)
             chip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=3)
             chip.add_css_class("quick-chip")
+            chip.set_size_request(286, 40)
+            chip.set_hexpand(False)
+            chip.set_vexpand(False)
+            chip.set_halign(Gtk.Align.START)
+            chip.set_valign(Gtk.Align.CENTER)
 
-            item_button = Gtk.Button(label=item["title"])
+            item_button = Gtk.Button()
             item_button.add_css_class("quick-button")
-            item_button.set_tooltip_text(item["text"])
+            item_button.set_size_request(112, 34)
+            item_button.set_hexpand(False)
+            item_button.set_vexpand(False)
+            item_button.set_halign(Gtk.Align.START)
+            item_button.set_valign(Gtk.Align.CENTER)
+            item_title = Gtk.Label(label=item["title"])
+            item_title.set_ellipsize(Pango.EllipsizeMode.END)
+            item_title.set_wrap(False)
+            item_title.set_lines(1)
+            item_title.set_width_chars(12)
+            item_title.set_max_width_chars(12)
+            item_button.set_child(item_title)
+            item_button.set_tooltip_text(f'{item["title"]}\n{item["text"]}')
             item_button.connect("clicked", self._on_quick_clicked, item)
             chip.append(item_button)
 
@@ -365,7 +491,13 @@ class MainWindow(Gtk.ApplicationWindow):
                       f"{float(item['speed']):.2f}× · {float(item['volume']):.2f}×"
             )
             profile_label.add_css_class("dim-label")
-            profile_label.set_max_width_chars(30)
+            profile_label.set_ellipsize(Pango.EllipsizeMode.END)
+            profile_label.set_wrap(False)
+            profile_label.set_lines(1)
+            profile_label.set_valign(Gtk.Align.CENTER)
+            profile_label.set_vexpand(False)
+            profile_label.set_width_chars(12)
+            profile_label.set_max_width_chars(12)
             profile_label.set_tooltip_text(
                 f"{model_name} · {speaker_name} · speed {item['speed']} · volume {item['volume']}"
             )
@@ -373,12 +505,18 @@ class MainWindow(Gtk.ApplicationWindow):
 
             edit_button = Gtk.Button.new_from_icon_name("document-edit-symbolic")
             edit_button.add_css_class("flat")
+            edit_button.set_size_request(34, 34)
+            edit_button.set_vexpand(False)
+            edit_button.set_valign(Gtk.Align.CENTER)
             edit_button.set_tooltip_text(f"Sửa Quick Chat: {item['title']}")
             edit_button.connect("clicked", self._edit_quick_chat, item)
             chip.append(edit_button)
 
             delete_button = Gtk.Button.new_from_icon_name("user-trash-symbolic")
             delete_button.add_css_class("flat")
+            delete_button.set_size_request(34, 34)
+            delete_button.set_vexpand(False)
+            delete_button.set_valign(Gtk.Align.CENTER)
             delete_button.set_tooltip_text(f"Xóa Quick Chat: {item['title']}")
             delete_button.connect(
                 "clicked", self._delete_quick_chat, item["id"], item["title"]
@@ -470,6 +608,7 @@ class MainWindow(Gtk.ApplicationWindow):
         text_label = Gtk.Label(label="Nội dung nói")
         text_label.set_xalign(0)
         text_view = Gtk.TextView()
+        text_view.add_css_class("quick-chat-editor")
         text_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         text_view.set_size_request(-1, 96)
         if item:
@@ -491,8 +630,7 @@ class MainWindow(Gtk.ApplicationWindow):
         )
         model_label = Gtk.Label(label="Voice Model")
         model_label.set_xalign(0)
-        model_button = Gtk.Button(label=self._voice_button_label(profile.model_id))
-        model_button.set_icon_name("pan-down-symbolic")
+        model_button = self._make_voice_button(profile.model_id)
         model_button.set_hexpand(True)
         model_button.set_tooltip_text("Chọn model, speaker, speed và volume cho Quick Chat")
         model_button.connect(
@@ -547,7 +685,7 @@ class MainWindow(Gtk.ApplicationWindow):
         target.speaker_id = updated.speaker_id
         target.speed = updated.speed
         target.volume = updated.volume
-        button.set_label(self._voice_button_label(target.model_id))
+        self._set_voice_button_label(button, target.model_id)
         button.set_tooltip_text(self._profile_tooltip(target))
 
     def _profile_tooltip(self, profile: VoiceProfile) -> str:
@@ -567,8 +705,8 @@ class MainWindow(Gtk.ApplicationWindow):
         target.volume = updated.volume
         self.config.save()
         if target is self.config.direct_chat and hasattr(self, "app_voice_button"):
-            self.app_voice_button.set_label(
-                self._voice_button_label(self.config.direct_chat.model_id)
+            self._set_voice_button_label(
+                self.app_voice_button, self.config.direct_chat.model_id
             )
             self.app_voice_button.set_tooltip_text(
                 self._profile_tooltip(self.config.direct_chat)
@@ -582,8 +720,16 @@ class MainWindow(Gtk.ApplicationWindow):
         button.set_tooltip_text(self._profile_tooltip(target))
 
 
+    @staticmethod
+    def _display_text(text: str, limit: int = 40) -> str:
+        value = str(text or "")
+        if len(value) <= limit:
+            return value
+        return value[:limit - 1].rstrip() + "…"
+
     def _set_status(self, text: str, state: str = "neutral") -> None:
-        self.status_text.set_text(text)
+        self.status_text.set_text(self._display_text(text, 40))
+        self.status_text.set_tooltip_text(text)
         self.status_dot.remove_css_class("connected")
         self.status_dot.remove_css_class("warning")
         self.status_dot.remove_css_class("error")
@@ -621,20 +767,43 @@ class MainWindow(Gtk.ApplicationWindow):
             author = payload.get("author", "Discord")
             self._append_bubble(text, "incoming", language, author)
             self.database.add_history("incoming", "discord", language, text)
+        elif event == "speech_busy":
+            self._speech_busy = True
+            preview_status = self._preview_status
+            self._stop_tts_preview()
+            self._preview_synthesizing = False
+            self._update_preview_buttons()
+            if preview_status is not None:
+                preview_status.set_text(
+                    "Preview đã dừng vì bot đang xử lý TTS."
+                )
+            self.speaking_label.set_text("Đang xử lý TTS…")
         elif event == "speech_started":
             self.speaking_label.set_text("Đang nói…")
+        elif event == "speech_idle":
+            self._speech_busy = False
+            self.speaking_label.set_text("")
+            self._update_preview_buttons()
         elif event in {"speech_finished", "speech_stopped", "speech_interrupted"}:
-            self.speaking_label.set_text("")
+            if self._speech_busy:
+                self.speaking_label.set_text("Đang xử lý TTS…")
+            else:
+                self.speaking_label.set_text("")
         elif event == "speech_error":
-            self.speaking_label.set_text("")
+            if self._speech_busy:
+                self.speaking_label.set_text("Đang xử lý TTS…")
+            else:
+                self.speaking_label.set_text("")
             self._append_bubble(payload.get("message", "TTS error"), "system", "vi", "TTS")
         elif event == "log":
-            self.footer_status.set_text(payload.get("message", ""))
+            log_message = str(payload.get("message", ""))
+            self.footer_status.set_text(self._display_text(log_message, 64))
+            self.footer_status.set_tooltip_text(log_message)
 
     def _update_guilds(self, guilds: list[dict], selected_id: int | None) -> None:
         self._loading_dropdowns = True
         self.guilds = {item["id"]: item for item in guilds}
-        names = [item["name"] for item in guilds] or ["Bot chưa có server"]
+        names = [self._display_text(item["name"], 36) for item in guilds] or ["Bot chưa có server"]
         self.guild_dropdown.set_model(Gtk.StringList.new(names))
         ids = list(self.guilds.keys())
         if selected_id in ids:
@@ -643,12 +812,16 @@ class MainWindow(Gtk.ApplicationWindow):
             self.guild_dropdown.set_selected(0)
             selected_id = ids[0]
         self._loading_dropdowns = False
+        selected_guild = self.guilds.get(selected_id) if selected_id is not None else None
+        self.guild_dropdown.set_tooltip_text(
+            selected_guild["name"] if selected_guild else "Discord server"
+        )
         self._update_voice_channels(selected_id)
 
     def _update_voice_channels(self, guild_id: int | None) -> None:
         item = self.guilds.get(guild_id) if guild_id else None
         self.voice_channels = item["voice_channels"] if item else []
-        names = [channel["name"] for channel in self.voice_channels] or ["Không có voice channel"]
+        names = [self._display_text(channel["name"], 36) for channel in self.voice_channels] or ["Không có voice channel"]
         self.channel_dropdown.set_model(Gtk.StringList.new(names))
         selected = next(
             (index for index, channel in enumerate(self.voice_channels)
@@ -656,6 +829,13 @@ class MainWindow(Gtk.ApplicationWindow):
             0,
         )
         self.channel_dropdown.set_selected(selected)
+        selected_channel = (
+            self.voice_channels[selected]
+            if selected < len(self.voice_channels) else None
+        )
+        self.channel_dropdown.set_tooltip_text(
+            selected_channel["name"] if selected_channel else "Voice channel"
+        )
 
     def _on_guild_selected(self, dropdown, _pspec) -> None:
         if self._loading_dropdowns:
@@ -665,6 +845,7 @@ class MainWindow(Gtk.ApplicationWindow):
         if index >= len(ids):
             return
         guild_id = ids[index]
+        self.guild_dropdown.set_tooltip_text(self.guilds[guild_id]["name"])
         if self.discord:
             self.discord.set_guild(guild_id)
         self.config.guild_id = guild_id
@@ -707,6 +888,18 @@ class MainWindow(Gtk.ApplicationWindow):
         self.discord.start(token)
 
     def _post_service_event(self, event: str, payload: dict) -> None:
+        # Apply speech priority before the event reaches GTK's main loop so a
+        # preview process cannot race a newly submitted Discord TTS request.
+        if event == "speech_busy":
+            self._speech_busy_signal.set()
+            worker = self._preview_worker
+            if worker is not None:
+                worker.stop_for_speech()
+        elif event == "speech_idle":
+            self._speech_busy_signal.clear()
+            worker = self._preview_worker
+            if worker is not None:
+                worker.allow_preview()
         GLib.idle_add(self.handle_service_event, event, payload)
 
 
@@ -752,6 +945,40 @@ class MainWindow(Gtk.ApplicationWindow):
         )
         token_row.append(show_token)
         content.append(token_row)
+
+        content.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        auto_join_section = Gtk.Label(label="Tự động tham gia")
+        auto_join_section.add_css_class("heading")
+        auto_join_section.set_xalign(0)
+        content.append(auto_join_section)
+
+        auto_join_note = Gtk.Label(
+            label="Khi bot kết nối, ứng dụng sẽ tìm voice channel mà User ID này "
+                  "đang ở và tự tham gia. Để trống để tắt tính năng."
+        )
+        auto_join_note.set_wrap(True)
+        auto_join_note.set_xalign(0)
+        auto_join_note.add_css_class("dim-label")
+        content.append(auto_join_note)
+
+        auto_join_user_id_label = Gtk.Label(label="Discord User ID")
+        auto_join_user_id_label.set_xalign(0)
+        content.append(auto_join_user_id_label)
+        auto_join_user_id_entry = Gtk.Entry(
+            placeholder_text="Ví dụ: 123456789012345678"
+        )
+        auto_join_user_id_entry.set_input_purpose(Gtk.InputPurpose.DIGITS)
+        auto_join_user_id_entry.set_text(
+            str(self.config.auto_join_user_id)
+            if self.config.auto_join_user_id is not None else ""
+        )
+        content.append(auto_join_user_id_entry)
+
+        auto_join_error_label = Gtk.Label()
+        auto_join_error_label.add_css_class("error")
+        auto_join_error_label.set_xalign(0)
+        auto_join_error_label.set_visible(False)
+        content.append(auto_join_error_label)
 
         content.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
         activity_section = Gtk.Label(label="Discord Activity")
@@ -825,10 +1052,9 @@ class MainWindow(Gtk.ApplicationWindow):
         reader_note.add_css_class("dim-label")
         content.append(reader_note)
 
-        reader_voice_button = Gtk.Button(
-            label=self._voice_button_label(self.config.discord_reader.model_id)
+        reader_voice_button = self._make_voice_button(
+            self.config.discord_reader.model_id
         )
-        reader_voice_button.set_icon_name("pan-down-symbolic")
         reader_voice_button.set_hexpand(True)
         reader_voice_button.set_tooltip_text(
             self._profile_tooltip(self.config.discord_reader)
@@ -870,9 +1096,31 @@ class MainWindow(Gtk.ApplicationWindow):
                 dialog.destroy()
                 return
 
+            raw_auto_join_user_id = auto_join_user_id_entry.get_text().strip()
+            if raw_auto_join_user_id and (
+                not raw_auto_join_user_id.isascii()
+                or not raw_auto_join_user_id.isdigit()
+                or len(raw_auto_join_user_id) > 20
+                or not 0 < int(raw_auto_join_user_id) < 2**64
+            ):
+                auto_join_error_label.set_text(
+                    "User ID phải là dãy số Discord hợp lệ, không kèm ký tự khác."
+                )
+                auto_join_error_label.set_visible(True)
+                auto_join_user_id_entry.add_css_class("error")
+                return
+
+            auto_join_user_id = (
+                int(raw_auto_join_user_id) if raw_auto_join_user_id else None
+            )
+            auto_join_error_label.set_visible(False)
+            auto_join_user_id_entry.remove_css_class("error")
+
             old_token = self.config.discord_token
+            old_auto_join_user_id = self.config.auto_join_user_id
             new_token = token_entry.get_text().strip()
             self.config.discord_token = new_token
+            self.config.auto_join_user_id = auto_join_user_id
             self.config.discord_status = status_values[
                 min(status_dropdown.get_selected(), len(status_values) - 1)
             ]
@@ -913,6 +1161,8 @@ class MainWindow(Gtk.ApplicationWindow):
                     ).start()
             elif self.discord and self.discord.is_running:
                 self.discord.update_presence()
+                if old_auto_join_user_id != auto_join_user_id:
+                    self.discord.auto_join_configured_user()
             elif new_token:
                 self._start_discord(new_token)
 
@@ -928,6 +1178,32 @@ class MainWindow(Gtk.ApplicationWindow):
             return model.display_name
         return f"Missing model: {Path(model_id).name}" if model_id else "Chọn model"
 
+    def _make_voice_button(self, model_id: str) -> Gtk.Button:
+        button = Gtk.Button()
+        contents = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        label = Gtk.Label(label=self._voice_button_label(model_id))
+        label.set_xalign(0)
+        label.set_hexpand(True)
+        label.set_ellipsize(Pango.EllipsizeMode.END)
+        label.set_wrap(True)
+        label.set_wrap_mode(Pango.WrapMode.CHAR)
+        if hasattr(label, "set_natural_wrap_mode"):
+            label.set_natural_wrap_mode(Pango.WrapMode.CHAR)
+        label.set_lines(1)
+        label.set_width_chars(18)
+        label.set_max_width_chars(24)
+        contents.append(label)
+        contents.append(Gtk.Image.new_from_icon_name("pan-down-symbolic"))
+        button.set_child(contents)
+        return button
+
+    def _set_voice_button_label(self, button: Gtk.Button, model_id: str) -> None:
+        contents = button.get_child()
+        if isinstance(contents, Gtk.Box):
+            label = contents.get_first_child()
+            if isinstance(label, Gtk.Label):
+                label.set_text(self._voice_button_label(model_id))
+
     def _open_voice_directory(self, *_args) -> None:
         try:
             VOICE_DIR.mkdir(parents=True, exist_ok=True)
@@ -941,6 +1217,19 @@ class MainWindow(Gtk.ApplicationWindow):
     def _open_voice_picker(
         self, _button: Gtk.Button, profile: VoiceProfile, on_save
     ) -> None:
+        if self._preview_worker is not None:
+            self._close_voice_picker_resources(self._voice_picker_generation)
+        self._preview_buttons.clear()
+        self._preview_synthesizing = False
+        self._voice_picker_generation += 1
+        picker_generation = self._voice_picker_generation
+        self._preview_worker = PreviewWorker(
+            self.engine.voice_dir,
+            lambda result, generation=picker_generation:
+                self._post_preview_worker_result(generation, result),
+        )
+        if self._speech_busy_signal.is_set():
+            self._preview_worker.stop_for_speech()
         models = self.engine.list_models()
         draft = profile.copy()
         dialog = Gtk.Dialog(title="Chọn Voice Model", transient_for=self, modal=True)
@@ -1043,6 +1332,10 @@ class MainWindow(Gtk.ApplicationWindow):
 
                 details = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
                 details.set_hexpand(True)
+                radio.set_hexpand(True)
+                radio.set_child(details)
+                radio.set_cursor_from_name("pointer")
+                radio.set_tooltip_text(f"Chọn model: {model.display_name}")
                 name = Gtk.Label(label=model.display_name)
                 name.set_xalign(0)
                 name.add_css_class("heading")
@@ -1065,6 +1358,10 @@ class MainWindow(Gtk.ApplicationWindow):
                     "media-playback-start-symbolic"
                 )
                 play_button.set_tooltip_text("Nghe thử model này")
+                play_button.set_sensitive(
+                    not self._speech_busy and not self._speech_busy_signal.is_set()
+                )
+                self._preview_buttons.append(play_button)
                 play_button.connect(
                     "clicked",
                     lambda button, selected=model, state=speaker_state:
@@ -1075,7 +1372,6 @@ class MainWindow(Gtk.ApplicationWindow):
                         ),
                 )
                 top_row.append(radio)
-                top_row.append(details)
                 top_row.append(play_button)
                 card.append(top_row)
 
@@ -1142,7 +1438,7 @@ class MainWindow(Gtk.ApplicationWindow):
         )
 
         def on_response(_dialog, response):
-            self._stop_tts_preview()
+            self._close_voice_picker_resources(picker_generation)
             if response == Gtk.ResponseType.OK and selected_model["id"]:
                 model = self.engine.get_model(selected_model["id"])
                 if model:
@@ -1157,6 +1453,11 @@ class MainWindow(Gtk.ApplicationWindow):
             dialog.destroy()
 
         dialog.connect("response", on_response)
+        dialog.connect(
+            "close-request",
+            lambda *_args: (self._close_voice_picker_resources(picker_generation), False)[1],
+        )
+        self._update_preview_buttons()
         dialog.present()
 
     def _make_scale_row(
@@ -1175,20 +1476,22 @@ class MainWindow(Gtk.ApplicationWindow):
         )
         scale.set_value(value)
         scale.set_draw_value(False)
-        scale.connect(
-            "value-changed",
-            lambda widget: value_label.set_text(
-                f"{widget.get_value():.2f}{suffix}"
-            ),
-        )
+        scale.add_mark(1.0, Gtk.PositionType.BOTTOM, "1×")
+
+        # Snap to the normal 1× level when the thumb gets within half a step.
+        # Keeping the threshold below one full step lets keyboard arrows move
+        # away from 1× without getting stuck on the snap point.
+        snap_tolerance = scale.get_adjustment().get_step_increment() / 2.0
+
+        def on_value_changed(widget):
+            current = widget.get_value()
+            if current != 1.0 and abs(current - 1.0) <= snap_tolerance + 1e-9:
+                widget.set_value(1.0)
+                current = widget.get_value()
+            value_label.set_text(f"{current:.2f}{suffix}")
+
+        scale.connect("value-changed", on_value_changed)
         return row, scale
-
-    def _stop_tts_preview_from_picker(
-        self, _button, status_label: Gtk.Label
-    ) -> None:
-        self._stop_tts_preview()
-        status_label.set_text("Đã dừng nghe thử.")
-
 
     def _preview_text_for_model(self, model) -> str:
         family = model.language_code.lower().replace("-", "_").split("_", 1)[0]
@@ -1207,6 +1510,74 @@ class MainWindow(Gtk.ApplicationWindow):
         }
         return samples.get(family, "Hello! This is a preview of the selected voice.")
 
+    def _update_preview_buttons(self) -> None:
+        enabled = (
+            not self._speech_busy
+            and not self._speech_busy_signal.is_set()
+            and not self._preview_synthesizing
+        )
+        for preview_button in self._preview_buttons:
+            preview_button.set_sensitive(
+                enabled and preview_button is not self._preview_button
+            )
+        if self._preview_stop_button is not None:
+            self._preview_stop_button.set_sensitive(
+                self._preview_synthesizing or self._preview_media is not None
+            )
+
+    def _post_preview_worker_result(self, picker_generation: int, result: dict) -> None:
+        GLib.idle_add(
+            self._handle_preview_worker_result, picker_generation, result
+        )
+
+    def _handle_preview_worker_result(
+        self, picker_generation: int, result: dict
+    ) -> bool:
+        wav_path_value = result.get("wav_path")
+        if (
+            picker_generation != self._voice_picker_generation
+            or self._speech_busy
+            or self._speech_busy_signal.is_set()
+            or result.get("request_id") != self._preview_request_id
+        ):
+            if wav_path_value:
+                Path(wav_path_value).unlink(missing_ok=True)
+            return GLib.SOURCE_REMOVE
+
+        self._preview_synthesizing = False
+        if not result.get("ok"):
+            self._tts_preview_failed(
+                self._preview_generation,
+                str(result.get("error", "Preview worker không tạo được WAV.")),
+            )
+            return GLib.SOURCE_REMOVE
+
+        if not wav_path_value:
+            self._tts_preview_failed(
+                self._preview_generation,
+                "Preview worker không trả về đường dẫn WAV.",
+            )
+            return GLib.SOURCE_REMOVE
+
+        self._update_preview_buttons()
+        self._start_tts_preview(
+            self._preview_generation, Path(wav_path_value)
+        )
+        return GLib.SOURCE_REMOVE
+
+    def _close_voice_picker_resources(self, picker_generation: int) -> None:
+        if picker_generation != self._voice_picker_generation:
+            return
+        # Invalidate any result already queued on GTK's main loop before
+        # stopping the child process and removing the dialog's playback state.
+        self._voice_picker_generation += 1
+        worker, self._preview_worker = self._preview_worker, None
+        if worker is not None:
+            worker.close()
+        self._stop_tts_preview()
+        self._preview_synthesizing = False
+        self._preview_buttons.clear()
+
     def _preview_model(
         self,
         button: Gtk.Button,
@@ -1217,49 +1588,66 @@ class MainWindow(Gtk.ApplicationWindow):
         speed: float | None = None,
         volume: float | None = None,
     ) -> None:
+        if self._speech_busy or self._speech_busy_signal.is_set():
+            status_label.set_text(
+                "Bot đang xử lý hoặc phát TTS. Hãy thử lại sau khi bot nói xong."
+            )
+            self._update_preview_buttons()
+            return
+
+        worker = self._preview_worker
+        if worker is None:
+            status_label.set_text("Preview worker chưa sẵn sàng. Hãy đóng và mở lại bảng chọn model.")
+            return
+        if self._preview_synthesizing:
+            return
+
         speaker_id = int(speaker_state.get("speaker_id", model.default_speaker_id))
         text = self._preview_text_for_model(model)
 
-        # Preview is local-only and reuses the same Piper/WAV/GTK playback path.
+        # Stop an earlier playback, but reuse the dialog-scoped worker process.
         self._stop_tts_preview()
         generation = self._preview_generation
+        self._preview_request_id += 1
+        request_id = self._preview_request_id
         speed = 1.0 if speed is None else speed
         volume = 1.0 if volume is None else volume
         self._preview_button = button
         self._preview_stop_button = stop_button
         self._preview_status = status_label
-        stop_button.set_sensitive(True)
-        button.set_sensitive(False)
+        self._preview_synthesizing = True
+        self._update_preview_buttons()
+
         speaker_label = (
             f" · {model.speaker_name(speaker_id)}" if model.num_speakers > 1 else ""
         )
         status_label.set_text(
             f"Đang tổng hợp {model.display_name}{speaker_label}…"
         )
+        stop_button.set_sensitive(True)
 
-        def worker() -> None:
-            wav_path: Path | None = None
-            try:
-                wav_path = self.engine.synthesize(
-                    text, model.model_id, speed, volume, speaker_id
-                )
-                logger.info(
-                    "TTS preview synthesized: generation=%d model=%s speaker_id=%d "
-                    "wav=%s size=%d",
-                    generation, model.model_id, speaker_id, wav_path,
-                    wav_path.stat().st_size if wav_path.exists() else -1,
-                )
-                GLib.idle_add(self._start_tts_preview, generation, wav_path)
-            except Exception as exc:
-                logger.exception("TTS preview synthesis failed (generation=%d)", generation)
-                if wav_path:
-                    wav_path.unlink(missing_ok=True)
-                GLib.idle_add(self._tts_preview_failed, generation, str(exc))
+        try:
+            accepted = worker.request(
+                request_id, text, model.model_id, speaker_id, speed, volume
+            )
+        except Exception as exc:
+            logger.exception("Could not start preview worker request")
+            accepted = False
+            request_error = str(exc)
+        else:
+            request_error = "Không thể gửi yêu cầu tới Preview Worker."
 
-        threading.Thread(target=worker, name="tts-preview", daemon=True).start()
+        if not accepted:
+            self._preview_synthesizing = False
+            self._tts_preview_failed(generation, request_error)
 
     def _start_tts_preview(self, generation: int, wav_path: Path) -> bool:
-        if generation != self._preview_generation or self._preview_button is None:
+        if (
+            generation != self._preview_generation
+            or self._preview_button is None
+            or self._speech_busy
+            or self._speech_busy_signal.is_set()
+        ):
             wav_path.unlink(missing_ok=True)
             return GLib.SOURCE_REMOVE
 
@@ -1272,11 +1660,13 @@ class MainWindow(Gtk.ApplicationWindow):
             self._preview_media = media
             self._preview_path = wav_path
             media.play()
-            self._preview_status.set_text(
-                "Đã tạo WAV. Đang phát trực tiếp qua thiết bị âm thanh của máy…"
-            )
+            if self._preview_status is not None:
+                self._preview_status.set_text(
+                    "Đã tạo WAV. Đang phát trực tiếp qua thiết bị âm thanh của máy…"
+                )
+            self._update_preview_buttons()
             logger.info(
-                "TTS preview playback started: generation=%d path=%s",
+                "Preview WAV playback started: generation=%d path=%s",
                 generation, wav_path,
             )
         except Exception as exc:
@@ -1294,7 +1684,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self._finish_tts_preview(
                 generation, "File WAV đã tạo nhưng GTK không nhận diện được track âm thanh."
             )
-        else:
+        elif self._preview_status is not None:
             self._preview_status.set_text(
                 "Model đã tạo WAV có audio; đang thử phát qua âm thanh hệ thống."
             )
@@ -1322,7 +1712,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._preview_generation += 1
         media, self._preview_media = self._preview_media, None
         path, self._preview_path = self._preview_path, None
-        button, self._preview_button = self._preview_button, None
+        self._preview_button = None
         stop_button, self._preview_stop_button = self._preview_stop_button, None
         if media is not None:
             try:
@@ -1332,34 +1722,36 @@ class MainWindow(Gtk.ApplicationWindow):
                 logger.exception("Failed to release local TTS preview media")
         if path is not None:
             path.unlink(missing_ok=True)
-        if button is not None:
-            button.set_sensitive(True)
         if stop_button is not None:
             stop_button.set_sensitive(False)
         if self._preview_status is not None:
             self._preview_status.set_text(message)
         self._preview_status = None
+        self._update_preview_buttons()
 
     def _tts_preview_failed(self, generation: int, message: str) -> bool:
         if generation != self._preview_generation:
             return GLib.SOURCE_REMOVE
         self._preview_generation += 1
-        button, self._preview_button = self._preview_button, None
+        self._preview_button = None
         stop_button, self._preview_stop_button = self._preview_stop_button, None
-        if button is not None:
-            button.set_sensitive(True)
         if stop_button is not None:
             stop_button.set_sensitive(False)
         if self._preview_status is not None:
             self._preview_status.set_text(f"Lỗi tổng hợp TTS: {message}")
         self._preview_status = None
+        self._update_preview_buttons()
         return GLib.SOURCE_REMOVE
 
     def _stop_tts_preview(self) -> None:
+        worker = self._preview_worker
+        if worker is not None:
+            worker.cancel_current()
+        self._preview_synthesizing = False
         self._preview_generation += 1
         media, self._preview_media = self._preview_media, None
         path, self._preview_path = self._preview_path, None
-        button, self._preview_button = self._preview_button, None
+        self._preview_button = None
         stop_button, self._preview_stop_button = self._preview_stop_button, None
         if media is not None:
             try:
@@ -1369,11 +1761,16 @@ class MainWindow(Gtk.ApplicationWindow):
                 logger.exception("Failed to stop local TTS preview")
         if path is not None:
             path.unlink(missing_ok=True)
-        if button is not None:
-            button.set_sensitive(True)
         if stop_button is not None:
             stop_button.set_sensitive(False)
         self._preview_status = None
+        self._update_preview_buttons()
+
+    def _stop_tts_preview_from_picker(
+        self, _button, status_label: Gtk.Label
+    ) -> None:
+        self._stop_tts_preview()
+        status_label.set_text("Đã dừng nghe thử.")
 
     def _notify(self, title: str, body: str) -> None:
         notification = Gio.Notification.new(title)

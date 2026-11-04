@@ -15,15 +15,16 @@ window {
 }
 
 .chat-row {
+  min-width: 0;
   background: transparent;
   border: 0;
   padding: 3px 8px;
 }
 
 .chat-bubble {
+  min-width: 90px;
   border-radius: 16px;
   padding: 10px 13px;
-  min-width: 90px;
   background: alpha(@card_bg_color, 0.95);
   border: 1px solid alpha(currentColor, 0.09);
 }
@@ -59,6 +60,13 @@ window {
   padding: 4px 6px;
 }
 
+.quick-chat-editor {
+  border: 1px solid alpha(currentColor, 0.22);
+  border-radius: 8px;
+  padding: 8px;
+  background: alpha(@card_bg_color, 0.55);
+}
+
 .status-dot {
   border-radius: 999px;
   min-width: 8px;
@@ -70,6 +78,27 @@ window {
 .status-dot.warning { background: #e5a50a; }
 .status-dot.error { background: #e01b24; }
 
+.quick-chat-scroll {
+  min-width: 0;
+}
+
+.quick-chip {
+  min-width: 286px;
+  min-height: 40px;
+}
+
+.quick-chip > button {
+  min-height: 34px;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.quick-chip > label {
+  min-height: 34px;
+}
+
 .quick-button {
+  min-width: 112px;
+  min-height: 34px;
   border-radius: 999px;
 }
