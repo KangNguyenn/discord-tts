@@ -66,14 +66,40 @@ class MainWindow(Gtk.ApplicationWindow):
             return
         provider = Gtk.CssProvider()
         provider.load_from_path(str(css_path))
+
+        # GTK 4.20 exposes the system color-scheme preference through
+        # Gtk.Settings. Mirror it to this provider so CSS media queries
+        # follow the desktop setting inside Flatpak as well.
+        settings = Gtk.Settings.get_default()
+        settings_property = (
+            settings.find_property("gtk-interface-color-scheme")
+            if settings is not None else None
+        )
+        provider_property = provider.find_property("prefers-color-scheme")
+        if settings_property is not None and provider_property is not None:
+            def update_color_scheme(*_args) -> None:
+                scheme = settings.get_property("gtk-interface-color-scheme")
+                if scheme in (
+                    Gtk.InterfaceColorScheme.DARK,
+                    Gtk.InterfaceColorScheme.LIGHT,
+                ):
+                    provider.set_property("prefers-color-scheme", scheme)
+
+            update_color_scheme()
+            settings.connect(
+                "notify::gtk-interface-color-scheme", update_color_scheme
+            )
+
         display = Gdk.Display.get_default()
         if display:
             Gtk.StyleContext.add_provider_for_display(
                 display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
             )
+        self._css_provider = provider
 
     def _build_ui(self) -> None:
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        root.add_css_class("app-root")
         root.set_margin_top(12)
         root.set_margin_bottom(14)
         root.set_margin_start(16)
