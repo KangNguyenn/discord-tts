@@ -150,9 +150,13 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self.chat_list = Gtk.ListBox()
         self.chat_list.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.chat_list.set_hexpand(True)
         self.chat_list.add_css_class("chat-list")
         self.chat_scroll = Gtk.ScrolledWindow()
         self.chat_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.chat_scroll.set_propagate_natural_width(False)
+        self.chat_scroll.set_propagate_natural_height(False)
+        self.chat_scroll.set_hexpand(True)
         self.chat_scroll.set_vexpand(True)
         self.chat_scroll.set_child(self.chat_list)
         self.chat_scroll.add_css_class("top-card")
@@ -187,10 +191,9 @@ class MainWindow(Gtk.ApplicationWindow):
         lang_label = Gtk.Label(label="Voice")
         lang_label.add_css_class("dim-label")
         top_row.append(lang_label)
-        self.app_voice_button = Gtk.Button(
-            label=self._voice_button_label(self.config.direct_chat.model_id)
+        self.app_voice_button = self._make_voice_button(
+            self.config.direct_chat.model_id
         )
-        self.app_voice_button.set_icon_name("pan-down-symbolic")
         self.app_voice_button.set_tooltip_text("Chọn model, speaker, speed và volume cho Direct Chat")
         self.app_voice_button.connect(
             "clicked",
@@ -300,15 +303,20 @@ class MainWindow(Gtk.ApplicationWindow):
         row = Gtk.ListBoxRow()
         row.add_css_class("chat-row")
         line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
-        line.set_halign(Gtk.Align.END if direction == "outgoing" else Gtk.Align.START)
+        line.set_hexpand(True)
+        line.set_halign(Gtk.Align.FILL)
         bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        bubble.set_halign(Gtk.Align.END if direction == "outgoing" else Gtk.Align.START)
         bubble.add_css_class("chat-bubble")
         bubble.add_css_class(direction)
         message = Gtk.Label(label=text)
         message.set_wrap(True)
         message.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         message.set_xalign(0)
+        message.set_halign(Gtk.Align.FILL)
+        message.set_hexpand(True)
         message.set_selectable(True)
+        message.set_width_chars(1)
         message.set_max_width_chars(64)
         bubble.append(message)
         try:
@@ -322,6 +330,7 @@ class MainWindow(Gtk.ApplicationWindow):
         bubble.append(meta)
         line.append(bubble)
         row.set_child(line)
+        row.set_hexpand(True)
         self.chat_list.append(row)
         GLib.idle_add(self._scroll_chat_to_bottom)
 
@@ -491,8 +500,7 @@ class MainWindow(Gtk.ApplicationWindow):
         )
         model_label = Gtk.Label(label="Voice Model")
         model_label.set_xalign(0)
-        model_button = Gtk.Button(label=self._voice_button_label(profile.model_id))
-        model_button.set_icon_name("pan-down-symbolic")
+        model_button = self._make_voice_button(profile.model_id)
         model_button.set_hexpand(True)
         model_button.set_tooltip_text("Chọn model, speaker, speed và volume cho Quick Chat")
         model_button.connect(
@@ -547,7 +555,7 @@ class MainWindow(Gtk.ApplicationWindow):
         target.speaker_id = updated.speaker_id
         target.speed = updated.speed
         target.volume = updated.volume
-        button.set_label(self._voice_button_label(target.model_id))
+        self._set_voice_button_label(button, target.model_id)
         button.set_tooltip_text(self._profile_tooltip(target))
 
     def _profile_tooltip(self, profile: VoiceProfile) -> str:
@@ -567,8 +575,8 @@ class MainWindow(Gtk.ApplicationWindow):
         target.volume = updated.volume
         self.config.save()
         if target is self.config.direct_chat and hasattr(self, "app_voice_button"):
-            self.app_voice_button.set_label(
-                self._voice_button_label(self.config.direct_chat.model_id)
+            self._set_voice_button_label(
+                self.app_voice_button, self.config.direct_chat.model_id
             )
             self.app_voice_button.set_tooltip_text(
                 self._profile_tooltip(self.config.direct_chat)
@@ -927,6 +935,25 @@ class MainWindow(Gtk.ApplicationWindow):
         if model:
             return model.display_name
         return f"Missing model: {Path(model_id).name}" if model_id else "Chọn model"
+
+    def _make_voice_button(self, model_id: str) -> Gtk.Button:
+        button = Gtk.Button()
+        contents = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        label = Gtk.Label(label=self._voice_button_label(model_id))
+        label.set_xalign(0)
+        label.set_ellipsize(3)
+        label.set_max_width_chars(36)
+        contents.append(label)
+        contents.append(Gtk.Image.new_from_icon_name("pan-down-symbolic"))
+        button.set_child(contents)
+        return button
+
+    def _set_voice_button_label(self, button: Gtk.Button, model_id: str) -> None:
+        contents = button.get_child()
+        if isinstance(contents, Gtk.Box):
+            label = contents.get_first_child()
+            if isinstance(label, Gtk.Label):
+                label.set_text(self._voice_button_label(model_id))
 
     def _open_voice_directory(self, *_args) -> None:
         try:
