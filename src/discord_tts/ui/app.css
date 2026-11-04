@@ -84,6 +84,17 @@ window {
 
 .quick-chip {
   min-width: 286px;
+  min-height: 40px;
+}
+
+.quick-chip > button {
+  min-height: 34px;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.quick-chip > label {
+  min-height: 34px;
 }
 
 .quick-button {
