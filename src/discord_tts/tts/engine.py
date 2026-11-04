@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import tempfile
@@ -41,11 +42,12 @@ class VoiceModel:
 
 
 class PiperEngine:
-    """Piper wrapper with local model discovery and cached ONNX voice objects."""
+    """Piper wrapper that keeps only the most recently used ONNX voice loaded."""
 
     def __init__(self, voice_dir: Path = VOICE_DIR):
         self.voice_dir = voice_dir
-        self._voices: dict[str, Any] = {}
+        self._voice: Any | None = None
+        self._voice_path: str | None = None
         self._lock = threading.RLock()
 
     @staticmethod
@@ -239,11 +241,27 @@ class PiperEngine:
             ) from exc
 
         model_path = model_info.path
+        model_key = str(model_path)
         with self._lock:
-            voice = self._voices.get(str(model_path))
-            if voice is None:
-                voice = PiperVoice.load(str(model_path))
-                self._voices[str(model_path)] = voice
+            if self._voice is None or self._voice_path != model_key:
+                previous_model = self._voice_path
+                # Drop the previous ONNX session before loading another model.
+                # PiperVoice owns the runtime session and its model allocations.
+                self._voice = None
+                self._voice_path = None
+                if previous_model is not None:
+                    gc.collect()
+                    logger.info(
+                        "Released cached Piper model before switching: %s",
+                        previous_model,
+                    )
+
+                voice = PiperVoice.load(model_key)
+                self._voice = voice
+                self._voice_path = model_key
+                logger.info("Loaded Piper model into the single-model cache: %s", model_key)
+            else:
+                voice = self._voice
 
             output = tempfile.NamedTemporaryFile(
                 prefix="discord-tts-", suffix=".wav", delete=False
