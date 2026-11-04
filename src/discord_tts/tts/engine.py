@@ -220,6 +220,16 @@ class PiperEngine:
             )
         return model
 
+    def release_voice(self) -> None:
+        """Release the cached ONNX voice when it is no longer needed."""
+        with self._lock:
+            previous_model = self._voice_path
+            self._voice = None
+            self._voice_path = None
+            if previous_model is not None:
+                gc.collect()
+                logger.info("Released cached Piper model: %s", previous_model)
+
     def synthesize(
         self,
         text: str,
