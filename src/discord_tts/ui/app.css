@@ -15,12 +15,14 @@ window {
 }
 
 .chat-row {
+  min-width: 0;
   background: transparent;
   border: 0;
   padding: 3px 8px;
 }
 
 .chat-bubble {
+  min-width: 90px;
   border-radius: 16px;
   padding: 10px 13px;
   min-width: 90px;
@@ -82,10 +84,11 @@ window {
 }
 
 .quick-chip {
-  min-width: 0;
+  min-width: 286px;
 }
 
 .quick-button {
-  min-width: 0;
+  min-width: 112px;
+  min-height: 34px;
   border-radius: 999px;
 }
