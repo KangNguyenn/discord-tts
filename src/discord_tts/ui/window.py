@@ -728,7 +728,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self.guild_dropdown.set_selected(0)
             selected_id = ids[0]
         self._loading_dropdowns = False
-        selected_guild = self.guilds.get(selected_id) if selected_id else None
+        selected_guild = self.guilds.get(selected_id) if selected_id is not None else None
         self.guild_dropdown.set_tooltip_text(
             selected_guild["name"] if selected_guild else "Discord server"
         )
