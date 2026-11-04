@@ -387,7 +387,16 @@ class MainWindow(Gtk.ApplicationWindow):
         meta.set_max_width_chars(32)
         meta.add_css_class("chat-meta")
         bubble.append(meta)
-        line.append(bubble)
+        # Gtk.Box packs children from the start; halign on a natural-width
+        # child does not create the expanding space needed to push it right.
+        spacer = Gtk.Box()
+        spacer.set_hexpand(True)
+        if direction == "outgoing":
+            line.append(spacer)
+            line.append(bubble)
+        else:
+            line.append(bubble)
+            line.append(spacer)
         row.set_child(line)
         self.chat_list.append(row)
         GLib.idle_add(self._scroll_chat_to_bottom)
