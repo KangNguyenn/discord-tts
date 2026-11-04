@@ -8,11 +8,9 @@ from typing import Callable
 
 import discord
 from discord import app_commands
-from discord.ext import commands
 
 from discord_tts.config import AppConfig
 from discord_tts.services.speech_controller import SpeechController
-from discord_tts.storage.database import Database
 from discord_tts.tts.engine import PiperEngine
 
 
@@ -25,16 +23,14 @@ class DiscordService:
     def __init__(
         self,
         config: AppConfig,
-        database: Database,
         engine: PiperEngine,
         event_callback: Callable[[str, dict], None],
     ):
         self.config = config
-        self.database = database
         self.engine = engine
         self.event_callback = event_callback
         self.loop: asyncio.AbstractEventLoop | None = None
-        self.bot: commands.Bot | None = None
+        self.bot: discord.Client | None = None
         self.speech: SpeechController | None = None
         self.thread: threading.Thread | None = None
         self._token: str | None = None
@@ -101,7 +97,11 @@ class DiscordService:
         intents.messages = True
         intents.message_content = True
 
-        bot = commands.Bot(command_prefix="!", intents=intents)
+        initial_status, initial_activity = self._presence_values()
+        bot = discord.Client(
+            intents=intents, status=initial_status, activity=initial_activity
+        )
+        command_tree = app_commands.CommandTree(bot)
         self.bot = bot
         logger.info(
             "Created Discord client (voice intent=%s, guilds intent=%s)",
@@ -112,7 +112,6 @@ class DiscordService:
             self._voice_client,
             self.event_callback,
             self.engine,
-            lambda: (self.config.tts_speed, self.config.tts_volume),
         )
 
         @bot.event
@@ -129,10 +128,13 @@ class DiscordService:
                 )
             self._guilds = {guild.id: guild for guild in bot.guilds}
             self._publish_guilds()
+            # The previous app registered global slash commands. Syncing an
+            # empty command tree removes those stale commands from Discord.
             try:
-                await bot.tree.sync()
+                command_tree.clear_commands(guild=None)
+                await command_tree.sync()
             except Exception as exc:
-                self.event_callback("log", {"message": f"Không sync được slash commands: {exc}"})
+                logger.warning("Could not clear previously registered Discord commands: %s", exc)
 
         @bot.event
         async def on_disconnect() -> None:
@@ -165,16 +167,20 @@ class DiscordService:
                 return
 
             content = (message.content or "").strip()
+            profile = self.config.discord_reader
             is_allowed_channel = (
                 message.guild.id == self.config.guild_id
                 and message.channel.id in self.config.read_text_channel_ids
             )
-            if is_allowed_channel and content and not content.startswith(("!", "/")):
+            if is_allowed_channel and content:
+                model_id = self.engine.model_id(profile.model_id)
+                language = self.engine.language_code(model_id)
                 self.event_callback(
                     "discord_message",
                     {
                         "text": content,
-                        "language": self.config.discord_incoming_language,
+                        "language": language,
+                        "model_id": model_id,
                         "author": message.author.display_name,
                         "channel": getattr(message.channel, "name", "Discord"),
                         "guild_id": message.guild.id,
@@ -183,89 +189,13 @@ class DiscordService:
                 if self.speech:
                     self.speech.submit(
                         content,
-                        self.config.discord_incoming_language,
+                        model_id,
                         message.guild.id,
                         "discord",
+                        profile.speaker_id,
+                        profile.speed,
+                        profile.volume,
                     )
-
-            # Overriding on_message disables the default command dispatcher.
-            await bot.process_commands(message)
-
-        @bot.tree.command(name="join", description="Cho bot tham gia voice channel của bạn")
-        async def join(interaction: discord.Interaction) -> None:
-            if not interaction.guild:
-                await interaction.response.send_message("Lệnh này chỉ dùng trong server.", ephemeral=True)
-                return
-            member = interaction.user
-            voice_state = getattr(member, "voice", None)
-            channel = voice_state.channel if voice_state else None
-            if channel is None:
-                await interaction.response.send_message("Bạn cần vào voice channel trước.", ephemeral=True)
-                return
-            try:
-                await self._join_channel(channel)
-                self.config.guild_id = interaction.guild.id
-                self.config.voice_channel_id = channel.id
-                self.config.save()
-                self._publish_guilds()
-                await interaction.response.send_message(f"Đã vào **{channel.name}**.", ephemeral=True)
-            except Exception as exc:
-                await interaction.response.send_message(f"Không thể join: {exc}", ephemeral=True)
-
-        @bot.tree.command(name="leave", description="Cho bot rời voice channel")
-        async def leave(interaction: discord.Interaction) -> None:
-            if interaction.guild and interaction.guild.voice_client:
-                await interaction.guild.voice_client.disconnect(force=True)
-                await interaction.response.send_message("Đã rời voice channel.", ephemeral=True)
-                self.event_callback("voice_left", {})
-            else:
-                await interaction.response.send_message("Bot chưa ở trong voice channel.", ephemeral=True)
-
-        @bot.tree.command(name="stop", description="Dừng câu TTS đang phát")
-        async def stop(interaction: discord.Interaction) -> None:
-            if self.speech:
-                self.speech.stop(interaction.guild.id if interaction.guild else None)
-            await interaction.response.send_message("Đã dừng TTS.", ephemeral=True)
-
-        @bot.tree.command(name="tts", description="Đọc một câu bằng TTS")
-        @app_commands.describe(text="Nội dung cần đọc", language="Ngôn ngữ của câu")
-        @app_commands.choices(
-            language=[
-                app_commands.Choice(name="Tiếng Việt", value="vi"),
-                app_commands.Choice(name="English", value="en"),
-            ]
-        )
-        async def tts(
-            interaction: discord.Interaction,
-            text: str,
-            language: app_commands.Choice[str],
-        ) -> None:
-            if not interaction.guild:
-                await interaction.response.send_message("Lệnh này chỉ dùng trong server.", ephemeral=True)
-                return
-            if self.speech:
-                self.speech.submit(text, language.value, interaction.guild.id, "slash")
-            await interaction.response.send_message("Đã nhận câu TTS.", ephemeral=True)
-
-        @bot.tree.command(name="quick", description="Đọc một Quick Chat theo tên")
-        async def quick(interaction: discord.Interaction, name: str) -> None:
-            item = self.database.find_quick_message(name)
-            if item is None:
-                await interaction.response.send_message("Không tìm thấy Quick Chat đó.", ephemeral=True)
-                return
-            if not interaction.guild:
-                await interaction.response.send_message("Lệnh này chỉ dùng trong server.", ephemeral=True)
-                return
-            if self.speech:
-                self.speech.submit(item["text"], item["language"], interaction.guild.id, "quick")
-            await interaction.response.send_message(f"Đang đọc **{item['title']}**.", ephemeral=True)
-
-        # Prefix aliases are convenient for servers where slash commands are unavailable.
-        @bot.command(name="tts")
-        async def prefix_tts(ctx: commands.Context, language: str, *, text: str) -> None:
-            lang = "en" if language.lower() in {"en", "english"} else "vi"
-            if ctx.guild and self.speech:
-                self.speech.submit(text, lang, ctx.guild.id, "prefix")
 
         try:
             await bot.start(self._token, reconnect=True)
@@ -355,18 +285,26 @@ class DiscordService:
             await voice.disconnect(force=True)
         self.event_callback("voice_left", {})
 
-    def speak(self, text: str, language: str, source: str = "app") -> None:
-        self._submit(self._speak(text, language, source))
+    def speak(
+        self, text: str, model_id: str, speaker_id: int = 0,
+        speed: float = 1.0, volume: float = 1.0, source: str = "app",
+    ) -> None:
+        self._submit(self._speak(text, model_id, speaker_id, speed, volume, source))
 
-    async def _speak(self, text: str, language: str, source: str) -> None:
+    async def _speak(
+        self, text: str, model_id: str, speaker_id: int,
+        speed: float, volume: float, source: str,
+    ) -> None:
         logger.info(
-            "Speech requested: source=%s language=%s guild_id=%s text_length=%d",
-            source, language, self.config.guild_id, len(text),
+            "Speech requested: source=%s model=%s speaker_id=%d speed=%.2f volume=%.2f guild_id=%s text_length=%d",
+            source, model_id, speaker_id, speed, volume, self.config.guild_id, len(text),
         )
         if not self.speech:
             self.event_callback("speech_error", {"source": source, "message": "Discord bot chưa sẵn sàng."})
             return
-        self.speech.submit(text, language, self.config.guild_id, source)
+        self.speech.submit(
+            text, model_id, self.config.guild_id, source, speaker_id, speed, volume
+        )
 
     def stop_speech(self) -> None:
         self._submit(self._stop_speech())
@@ -381,10 +319,47 @@ class DiscordService:
         self.config.save()
         self._publish_guilds_threadsafe()
 
-    def set_read_channels(self, channel_ids: list[int], language: str) -> None:
+    def set_read_channels(self, channel_ids: list[int]) -> None:
         self.config.read_text_channel_ids = channel_ids
-        self.config.discord_incoming_language = language
         self.config.save()
+
+    def update_presence(self) -> None:
+        if self.loop and self.is_running:
+            self._submit(self._apply_presence())
+
+    def _presence_values(self):
+        statuses = {
+            "online": discord.Status.online,
+            "idle": discord.Status.idle,
+            "dnd": discord.Status.dnd,
+            "invisible": discord.Status.invisible,
+        }
+        activity_types = {
+            "playing": discord.ActivityType.playing,
+            "listening": discord.ActivityType.listening,
+            "watching": discord.ActivityType.watching,
+            "competing": discord.ActivityType.competing,
+        }
+        status = statuses.get(self.config.discord_status, discord.Status.online)
+        activity_name = self.config.discord_activity_name.strip() or "Discord TTS"
+        activity_kind = self.config.discord_activity_type
+        activity = None
+        if activity_kind == "streaming":
+            stream_url = self.config.discord_streaming_url.strip()
+            if stream_url:
+                activity = discord.Streaming(name=activity_name, url=stream_url)
+        else:
+            activity_type = activity_types.get(
+                activity_kind, discord.ActivityType.listening
+            )
+            activity = discord.Activity(type=activity_type, name=activity_name)
+        return status, activity
+
+    async def _apply_presence(self) -> None:
+        if not self.bot or not self.bot.is_ready():
+            return
+        status, activity = self._presence_values()
+        await self.bot.change_presence(status=status, activity=activity)
 
     def _publish_guilds_threadsafe(self) -> None:
         if not self.loop:
