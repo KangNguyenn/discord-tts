@@ -62,7 +62,7 @@ window,
   border: 1px solid alpha(currentColor, 0.16);
   border-radius: 16px;
   padding: 8px;
-  background: alpha(@card_bg_color, 0.95);
+  background: @card_bg_color;
 }
 
 .composer textview {
