@@ -155,6 +155,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self.speaking_label = Gtk.Label(label="")
         self.speaking_label.add_css_class("dim-label")
         chat_header.append(self.speaking_label)
+        self.clear_history_button = Gtk.Button.new_from_icon_name("user-trash-symbolic")
+        self.clear_history_button.add_css_class("flat")
+        self.clear_history_button.set_tooltip_text("Xóa toàn bộ lịch sử Conversation")
+        self.clear_history_button.connect("clicked", self._confirm_clear_history)
+        chat_header.append(self.clear_history_button)
         root.append(chat_header)
 
         self.chat_list = Gtk.ListBox()
@@ -190,7 +195,9 @@ class MainWindow(Gtk.ApplicationWindow):
         self.quick_box.set_min_children_per_line(1)
         self.quick_box.set_row_spacing(5)
         self.quick_box.set_column_spacing(5)
-        self.quick_box.set_homogeneous(True)
+        # Keep each shortcut at its natural one-line size. Homogeneous FlowBox
+        # cells can otherwise stretch short rows to fill the whole viewport.
+        self.quick_box.set_homogeneous(False)
         self.quick_box.set_hexpand(True)
 
         # Reserve a stable-height area for shortcuts. Extra rows scroll here
@@ -388,6 +395,39 @@ class MainWindow(Gtk.ApplicationWindow):
             author = "You" if direction == "outgoing" else item["source"].title()
             self._append_bubble(item["text"], direction, item["language"], author, item["created_at"])
 
+    def _confirm_clear_history(self, *_args) -> None:
+        dialog = Gtk.Dialog(
+            title="Xóa lịch sử Conversation", transient_for=self, modal=True
+        )
+        dialog.add_button("Hủy", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Xóa lịch sử", Gtk.ResponseType.OK)
+        content = dialog.get_content_area()
+        content.set_spacing(8)
+        content.set_margin_top(14)
+        content.set_margin_bottom(14)
+        content.set_margin_start(14)
+        content.set_margin_end(14)
+        message = Gtk.Label(
+            label="Xóa toàn bộ lịch sử Conversation?\\nHành động này không thể hoàn tác."
+        )
+        message.set_wrap(True)
+        message.set_xalign(0)
+        content.append(message)
+
+        def on_response(_dialog, response):
+            if response == Gtk.ResponseType.OK:
+                self.database.clear_history()
+                child = self.chat_list.get_first_child()
+                while child is not None:
+                    next_child = child.get_next_sibling()
+                    self.chat_list.remove(child)
+                    child = next_child
+                self.footer_status.set_text("Đã xóa lịch sử Conversation.")
+            dialog.destroy()
+
+        dialog.connect("response", on_response)
+        dialog.present()
+
     def _load_quick_chat(self) -> None:
         child = self.quick_box.get_first_child()
         while child:
@@ -399,21 +439,22 @@ class MainWindow(Gtk.ApplicationWindow):
             item = dict(row)
             chip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=3)
             chip.add_css_class("quick-chip")
-            chip.set_size_request(286, -1)
+            chip.set_size_request(286, 40)
             chip.set_hexpand(False)
+            chip.set_vexpand(False)
             chip.set_halign(Gtk.Align.START)
+            chip.set_valign(Gtk.Align.CENTER)
 
             item_button = Gtk.Button()
             item_button.add_css_class("quick-button")
             item_button.set_size_request(112, 34)
             item_button.set_hexpand(False)
+            item_button.set_vexpand(False)
             item_button.set_halign(Gtk.Align.START)
+            item_button.set_valign(Gtk.Align.CENTER)
             item_title = Gtk.Label(label=item["title"])
             item_title.set_ellipsize(Pango.EllipsizeMode.END)
-            item_title.set_wrap(True)
-            item_title.set_wrap_mode(Pango.WrapMode.CHAR)
-            if hasattr(item_title, "set_natural_wrap_mode"):
-                item_title.set_natural_wrap_mode(Pango.WrapMode.CHAR)
+            item_title.set_wrap(False)
             item_title.set_lines(1)
             item_title.set_width_chars(12)
             item_title.set_max_width_chars(12)
@@ -434,11 +475,10 @@ class MainWindow(Gtk.ApplicationWindow):
             )
             profile_label.add_css_class("dim-label")
             profile_label.set_ellipsize(Pango.EllipsizeMode.END)
-            profile_label.set_wrap(True)
-            profile_label.set_wrap_mode(Pango.WrapMode.CHAR)
-            if hasattr(profile_label, "set_natural_wrap_mode"):
-                profile_label.set_natural_wrap_mode(Pango.WrapMode.CHAR)
+            profile_label.set_wrap(False)
             profile_label.set_lines(1)
+            profile_label.set_valign(Gtk.Align.CENTER)
+            profile_label.set_vexpand(False)
             profile_label.set_width_chars(12)
             profile_label.set_max_width_chars(12)
             profile_label.set_tooltip_text(
@@ -448,12 +488,18 @@ class MainWindow(Gtk.ApplicationWindow):
 
             edit_button = Gtk.Button.new_from_icon_name("document-edit-symbolic")
             edit_button.add_css_class("flat")
+            edit_button.set_size_request(34, 34)
+            edit_button.set_vexpand(False)
+            edit_button.set_valign(Gtk.Align.CENTER)
             edit_button.set_tooltip_text(f"Sửa Quick Chat: {item['title']}")
             edit_button.connect("clicked", self._edit_quick_chat, item)
             chip.append(edit_button)
 
             delete_button = Gtk.Button.new_from_icon_name("user-trash-symbolic")
             delete_button.add_css_class("flat")
+            delete_button.set_size_request(34, 34)
+            delete_button.set_vexpand(False)
+            delete_button.set_valign(Gtk.Align.CENTER)
             delete_button.set_tooltip_text(f"Xóa Quick Chat: {item['title']}")
             delete_button.connect(
                 "clicked", self._delete_quick_chat, item["id"], item["title"]
