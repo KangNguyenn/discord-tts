@@ -31,11 +31,17 @@ class DiscordTTSApplication(Gtk.Application):
             self.window = MainWindow(
                 self, self.config, self.database, self.engine
             )
-            self.tray = StatusNotifierTray(self._present_window)
-            self.tray.start()
             self.add_action(self._make_simple_action("quit", self._quit))
             self.add_action(self._make_simple_action("show", self._present_window))
-            self.add_action(self._make_simple_action("settings", self.window._open_settings))
+            self.add_action(
+                self._make_simple_action("settings", self._open_settings_from_tray)
+            )
+            self.tray = StatusNotifierTray(
+                self._present_window,
+                self._open_settings_from_tray,
+                self._quit,
+            )
+            self.tray.start()
             token = self.config.discord_token.strip()
             if token:
                 self.window._start_discord(token)
@@ -50,6 +56,12 @@ class DiscordTTSApplication(Gtk.Application):
         if self.window:
             self.window.set_visible(True)
             self.window.present()
+        return False
+
+    def _open_settings_from_tray(self):
+        if self.window is not None:
+            self._present_window()
+            self.window._open_settings()
         return False
 
     def _quit(self):
