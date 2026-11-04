@@ -8,7 +8,7 @@ import threading
 import gi
 
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gdk, Gio, GLib, Gtk
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 
 from discord_tts.config import APP_NAME, AppConfig, VoiceProfile, VOICE_DIR
 from discord_tts.services.discord_service import DiscordService
@@ -941,7 +941,7 @@ class MainWindow(Gtk.ApplicationWindow):
         label = Gtk.Label(label=self._voice_button_label(model_id))
         label.set_xalign(0)
         label.set_hexpand(True)
-        label.set_ellipsize(3)
+        label.set_ellipsize(Pango.EllipsizeMode.END)
         label.set_max_width_chars(36)
         contents.append(label)
         contents.append(Gtk.Image.new_from_icon_name("pan-down-symbolic"))
