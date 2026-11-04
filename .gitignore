@@ -1,0 +1,5 @@
+# Local Flatpak build output
+/dist/
+/.flatpak-builder/
+/builddir/
+/repo/
