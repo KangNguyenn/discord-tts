@@ -1196,12 +1196,21 @@ class MainWindow(Gtk.ApplicationWindow):
         )
         scale.set_value(value)
         scale.set_draw_value(False)
-        scale.connect(
-            "value-changed",
-            lambda widget: value_label.set_text(
-                f"{widget.get_value():.2f}{suffix}"
-            ),
-        )
+        scale.add_mark(1.0, Gtk.PositionType.BOTTOM, "1×")
+
+        # Snap to the normal 1× level when the thumb gets within half a step.
+        # Keeping the threshold below one full step lets keyboard arrows move
+        # away from 1× without getting stuck on the snap point.
+        snap_tolerance = scale.get_adjustment().get_step_increment() / 2.0
+
+        def on_value_changed(widget):
+            current = widget.get_value()
+            if current != 1.0 and abs(current - 1.0) <= snap_tolerance + 1e-9:
+                widget.set_value(1.0)
+                current = widget.get_value()
+            value_label.set_text(f"{current:.2f}{suffix}")
+
+        scale.connect("value-changed", on_value_changed)
         return row, scale
 
     def _stop_tts_preview_from_picker(
