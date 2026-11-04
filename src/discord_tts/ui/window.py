@@ -153,6 +153,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self.chat_list.add_css_class("chat-list")
         self.chat_scroll = Gtk.ScrolledWindow()
         self.chat_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        # Keep chat history inside its viewport instead of propagating the
+        # natural height of every message to the main window.
+        self.chat_scroll.set_propagate_natural_height(False)
+        self.chat_scroll.set_propagate_natural_width(False)
+        self.chat_scroll.set_hexpand(True)
         self.chat_scroll.set_vexpand(True)
         self.chat_scroll.set_child(self.chat_list)
         self.chat_scroll.add_css_class("top-card")
@@ -177,7 +182,21 @@ class MainWindow(Gtk.ApplicationWindow):
         self.quick_box.set_row_spacing(5)
         self.quick_box.set_column_spacing(5)
         self.quick_box.set_homogeneous(False)
-        root.append(self.quick_box)
+        self.quick_box.set_hexpand(True)
+
+        # Reserve a stable-height area for shortcuts. Extra rows scroll here
+        # rather than increasing the main window's natural height.
+        self.quick_scroll = Gtk.ScrolledWindow()
+        self.quick_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.quick_scroll.set_propagate_natural_height(False)
+        self.quick_scroll.set_propagate_natural_width(False)
+        self.quick_scroll.set_min_content_height(104)
+        self.quick_scroll.set_max_content_height(104)
+        self.quick_scroll.set_hexpand(True)
+        self.quick_scroll.set_vexpand(False)
+        self.quick_scroll.set_child(self.quick_box)
+        self.quick_scroll.add_css_class("quick-chat-scroll")
+        root.append(self.quick_scroll)
 
         # Chat composer: Enter sends; Shift+Enter inserts a newline.
         composer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=7)
@@ -234,7 +253,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.input_placeholder.set_can_target(False)
         input_overlay.add_overlay(self.input_placeholder)
         text_row.append(input_overlay)
-        self.send_button = Gtk.Button.new_from_icon_name("paper-plane-symbolic")
+        self.send_button = Gtk.Button.new_from_icon_name("mail-send-symbolic")
         self.send_button.add_css_class("suggested-action")
         self.send_button.add_css_class("circular")
         self.send_button.set_valign(Gtk.Align.END)
@@ -317,6 +336,8 @@ class MainWindow(Gtk.ApplicationWindow):
         language_tag = (language or "unknown").replace("-", "_").split("_", 1)[0].upper()
         meta = Gtk.Label(label=f"{author} · {language_tag} · {time}")
         meta.set_xalign(1 if direction == "outgoing" else 0)
+        meta.set_ellipsize(Pango.EllipsizeMode.END)
+        meta.set_max_width_chars(32)
         meta.add_css_class("chat-meta")
         bubble.append(meta)
         line.append(bubble)
@@ -347,8 +368,12 @@ class MainWindow(Gtk.ApplicationWindow):
             chip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=3)
             chip.add_css_class("quick-chip")
 
-            item_button = Gtk.Button(label=item["title"])
+            item_button = Gtk.Button()
             item_button.add_css_class("quick-button")
+            item_title = Gtk.Label(label=item["title"])
+            item_title.set_ellipsize(Pango.EllipsizeMode.END)
+            item_title.set_max_width_chars(18)
+            item_button.set_child(item_title)
             item_button.set_tooltip_text(item["text"])
             item_button.connect("clicked", self._on_quick_clicked, item)
             chip.append(item_button)
@@ -364,7 +389,8 @@ class MainWindow(Gtk.ApplicationWindow):
                       f"{float(item['speed']):.2f}× · {float(item['volume']):.2f}×"
             )
             profile_label.add_css_class("dim-label")
-            profile_label.set_max_width_chars(30)
+            profile_label.set_ellipsize(Pango.EllipsizeMode.END)
+            profile_label.set_max_width_chars(18)
             profile_label.set_tooltip_text(
                 f"{model_name} · {speaker_name} · speed {item['speed']} · volume {item['volume']}"
             )
