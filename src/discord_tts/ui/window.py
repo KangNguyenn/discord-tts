@@ -38,6 +38,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self._preview_button: Gtk.Button | None = None
         self._preview_stop_button: Gtk.Button | None = None
         self._preview_status: Gtk.Label | None = None
+        self._preview_buttons: list[Gtk.Button] = []
+        self._speech_busy = False
 
         self.set_size_request(560, 600)
         self._load_css()
@@ -750,12 +752,35 @@ class MainWindow(Gtk.ApplicationWindow):
             author = payload.get("author", "Discord")
             self._append_bubble(text, "incoming", language, author)
             self.database.add_history("incoming", "discord", language, text)
+        elif event == "speech_busy":
+            self._speech_busy = True
+            for preview_button in self._preview_buttons:
+                preview_button.set_sensitive(False)
+            if self._preview_button is not None or self._preview_media is not None:
+                preview_status = self._preview_status
+                self._stop_tts_preview()
+                if preview_status is not None:
+                    preview_status.set_text(
+                        "Preview đã dừng vì bot đang xử lý TTS."
+                    )
+            self.speaking_label.set_text("Đang xử lý TTS…")
         elif event == "speech_started":
             self.speaking_label.set_text("Đang nói…")
+        elif event == "speech_idle":
+            self._speech_busy = False
+            self.speaking_label.set_text("")
+            for preview_button in self._preview_buttons:
+                preview_button.set_sensitive(preview_button is not self._preview_button)
         elif event in {"speech_finished", "speech_stopped", "speech_interrupted"}:
-            self.speaking_label.set_text("")
+            if self._speech_busy:
+                self.speaking_label.set_text("Đang xử lý TTS…")
+            else:
+                self.speaking_label.set_text("")
         elif event == "speech_error":
-            self.speaking_label.set_text("")
+            if self._speech_busy:
+                self.speaking_label.set_text("Đang xử lý TTS…")
+            else:
+                self.speaking_label.set_text("")
             self._append_bubble(payload.get("message", "TTS error"), "system", "vi", "TTS")
         elif event == "log":
             log_message = str(payload.get("message", ""))
@@ -1167,6 +1192,7 @@ class MainWindow(Gtk.ApplicationWindow):
     def _open_voice_picker(
         self, _button: Gtk.Button, profile: VoiceProfile, on_save
     ) -> None:
+        self._preview_buttons.clear()
         models = self.engine.list_models()
         draft = profile.copy()
         dialog = Gtk.Dialog(title="Chọn Voice Model", transient_for=self, modal=True)
@@ -1295,6 +1321,8 @@ class MainWindow(Gtk.ApplicationWindow):
                     "media-playback-start-symbolic"
                 )
                 play_button.set_tooltip_text("Nghe thử model này")
+                play_button.set_sensitive(not self._speech_busy)
+                self._preview_buttons.append(play_button)
                 play_button.connect(
                     "clicked",
                     lambda button, selected=model, state=speaker_state:
@@ -1372,6 +1400,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
         def on_response(_dialog, response):
             self._stop_tts_preview()
+            self._preview_buttons.clear()
             if response == Gtk.ResponseType.OK and selected_model["id"]:
                 model = self.engine.get_model(selected_model["id"])
                 if model:
@@ -1455,6 +1484,13 @@ class MainWindow(Gtk.ApplicationWindow):
         speed: float | None = None,
         volume: float | None = None,
     ) -> None:
+        if self._speech_busy:
+            button.set_sensitive(False)
+            status_label.set_text(
+                "Bot đang xử lý hoặc phát TTS. Hãy thử lại sau khi bot nói xong."
+            )
+            return
+
         speaker_id = int(speaker_state.get("speaker_id", model.default_speaker_id))
         text = self._preview_text_for_model(model)
 
@@ -1479,7 +1515,7 @@ class MainWindow(Gtk.ApplicationWindow):
             wav_path: Path | None = None
             try:
                 wav_path = self.engine.synthesize(
-                    text, model.model_id, speed, volume, speaker_id
+                    text, model.model_id, speed, volume, speaker_id, preview=True
                 )
                 logger.info(
                     "TTS preview synthesized: generation=%d model=%s speaker_id=%d "
@@ -1493,16 +1529,6 @@ class MainWindow(Gtk.ApplicationWindow):
                 if wav_path:
                     wav_path.unlink(missing_ok=True)
                 GLib.idle_add(self._tts_preview_failed, generation, str(exc))
-            finally:
-                # The WAV is self-contained; the ONNX model is no longer
-                # needed once synthesis finishes, even while audio is playing.
-                try:
-                    self.engine.release_voice()
-                except Exception:
-                    logger.exception(
-                        "Failed to release Piper model after preview synthesis "
-                        "(generation=%d)", generation
-                    )
 
         threading.Thread(target=worker, name="tts-preview", daemon=True).start()
 
@@ -1581,7 +1607,7 @@ class MainWindow(Gtk.ApplicationWindow):
         if path is not None:
             path.unlink(missing_ok=True)
         if button is not None:
-            button.set_sensitive(True)
+            button.set_sensitive(not self._speech_busy)
         if stop_button is not None:
             stop_button.set_sensitive(False)
         if self._preview_status is not None:
@@ -1595,7 +1621,7 @@ class MainWindow(Gtk.ApplicationWindow):
         button, self._preview_button = self._preview_button, None
         stop_button, self._preview_stop_button = self._preview_stop_button, None
         if button is not None:
-            button.set_sensitive(True)
+            button.set_sensitive(not self._speech_busy)
         if stop_button is not None:
             stop_button.set_sensitive(False)
         if self._preview_status is not None:
@@ -1618,7 +1644,7 @@ class MainWindow(Gtk.ApplicationWindow):
         if path is not None:
             path.unlink(missing_ok=True)
         if button is not None:
-            button.set_sensitive(True)
+            button.set_sensitive(not self._speech_busy)
         if stop_button is not None:
             stop_button.set_sensitive(False)
         self._preview_status = None
