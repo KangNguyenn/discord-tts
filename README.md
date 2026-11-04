@@ -107,7 +107,7 @@ Bundle được tạo tại `dist/Discord-TTS.flatpak`. Cài cho tài khoản hi
 flatpak install --user ./dist/Discord-TTS.flatpak
 ```
 
-Script tự cài `flatpak-builder` bằng pacman nếu máy chưa có và tự gỡ gói đó sau khi build. Nếu công cụ đã được cài từ trước, script giữ nguyên. Build sử dụng per-user Flatpak installation, tự thêm Flathub nếu cần, và xóa thư mục build/cache tạm sau khi chạy. GNOME SDK chỉ bị gỡ nếu nó được cài mới trong lần build này; GNOME Platform được giữ lại vì ứng dụng cần runtime này để chạy.
+Script tự cài `flatpak-builder` bằng pacman nếu máy chưa có và tự gỡ gói đó sau khi build. Nếu công cụ đã được cài từ trước, script giữ nguyên. Script cũng tự tạo `python3-dependencies.json` bằng `flatpak-pip-generator` giống CI; file được tạo tạm và tự xóa sau khi build. Build sử dụng per-user Flatpak installation, tự thêm Flathub nếu cần, và xóa thư mục build/cache/venv tạm sau khi chạy. GNOME SDK chỉ bị gỡ nếu nó được cài mới trong lần build này; GNOME Platform được giữ lại vì ứng dụng cần runtime này để chạy.
 
 Có thể đổi vị trí bundle bằng biến môi trường `OUTPUT_FILE`:
 
