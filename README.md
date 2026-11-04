@@ -89,16 +89,16 @@ Bot Token được lưu trên máy dưới dạng văn bản, với quyền truy
 
 ## Build Flatpak trên Arch Linux / CachyOS
 
-Cài công cụ build:
+Đảm bảo máy đã cài Flatpak:
 
 ```bash
-sudo pacman -S --needed flatpak flatpak-builder
+sudo pacman -S --needed flatpak
 ```
 
 Từ thư mục mã nguồn, chạy:
 
 ```bash
-bash scripts/build-flatpak.sh
+./scripts/build-flatpak.sh
 ```
 
 Bundle được tạo tại `dist/Discord-TTS.flatpak`. Cài cho tài khoản hiện tại, không cần `sudo`:
@@ -107,12 +107,12 @@ Bundle được tạo tại `dist/Discord-TTS.flatpak`. Cài cho tài khoản hi
 flatpak install --user ./dist/Discord-TTS.flatpak
 ```
 
-Script tự thêm Flathub vào user installation nếu chưa có, tải GNOME SDK/runtime cần thiết, build ứng dụng rồi xóa thư mục build và cache tạm. Nếu GNOME SDK chưa có trước đó, script sẽ gỡ SDK sau khi build; GNOME Platform được giữ lại vì ứng dụng cần runtime này để chạy. Gói công cụ `flatpak-builder` cài bằng pacman cũng được giữ lại để có thể build lần sau.
+Script tự cài `flatpak-builder` bằng pacman nếu máy chưa có và tự gỡ gói đó sau khi build. Nếu công cụ đã được cài từ trước, script giữ nguyên. Build sử dụng per-user Flatpak installation, tự thêm Flathub nếu cần, và xóa thư mục build/cache tạm sau khi chạy. GNOME SDK chỉ bị gỡ nếu nó được cài mới trong lần build này; GNOME Platform được giữ lại vì ứng dụng cần runtime này để chạy.
 
 Có thể đổi vị trí bundle bằng biến môi trường `OUTPUT_FILE`:
 
 ```bash
-OUTPUT_FILE="$HOME/Downloads/Discord-TTS.flatpak" bash scripts/build-flatpak.sh
+OUTPUT_FILE="$HOME/Downloads/Discord-TTS.flatpak" ./scripts/build-flatpak.sh
 ```
 
 ## Đóng góp và đóng gói
