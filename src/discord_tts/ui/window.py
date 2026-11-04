@@ -1493,6 +1493,16 @@ class MainWindow(Gtk.ApplicationWindow):
                 if wav_path:
                     wav_path.unlink(missing_ok=True)
                 GLib.idle_add(self._tts_preview_failed, generation, str(exc))
+            finally:
+                # The WAV is self-contained; the ONNX model is no longer
+                # needed once synthesis finishes, even while audio is playing.
+                try:
+                    self.engine.release_voice()
+                except Exception:
+                    logger.exception(
+                        "Failed to release Piper model after preview synthesis "
+                        "(generation=%d)", generation
+                    )
 
         threading.Thread(target=worker, name="tts-preview", daemon=True).start()
 
