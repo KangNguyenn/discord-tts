@@ -109,6 +109,11 @@ class Database:
                 ).fetchall()[::-1]
             )
 
+    def clear_history(self) -> None:
+        """Delete all saved Conversation messages."""
+        with self._connect() as db:
+            db.execute("DELETE FROM history")
+
     def quick_messages(self) -> list[sqlite3.Row]:
         with self._connect() as db:
             return list(
