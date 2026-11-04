@@ -100,6 +100,13 @@ class MainWindow(Gtk.ApplicationWindow):
         self.status_text = Gtk.Label(label="Chưa kết nối Discord")
         self.status_text.set_xalign(0)
         self.status_text.set_hexpand(True)
+        self.status_text.set_ellipsize(Pango.EllipsizeMode.END)
+        self.status_text.set_wrap(True)
+        self.status_text.set_wrap_mode(Pango.WrapMode.CHAR)
+        if hasattr(self.status_text, "set_natural_wrap_mode"):
+            self.status_text.set_natural_wrap_mode(Pango.WrapMode.CHAR)
+        self.status_text.set_lines(1)
+        self.status_text.set_max_width_chars(40)
         status_row.append(self.status_dot)
         status_row.append(self.status_text)
         self.connection_hint = Gtk.Label(label="Bot chạy trên máy này · TTS offline")
@@ -271,6 +278,13 @@ class MainWindow(Gtk.ApplicationWindow):
         self.footer_status.add_css_class("dim-label")
         self.footer_status.set_xalign(0)
         self.footer_status.set_hexpand(True)
+        self.footer_status.set_ellipsize(Pango.EllipsizeMode.END)
+        self.footer_status.set_wrap(True)
+        self.footer_status.set_wrap_mode(Pango.WrapMode.CHAR)
+        if hasattr(self.footer_status, "set_natural_wrap_mode"):
+            self.footer_status.set_natural_wrap_mode(Pango.WrapMode.CHAR)
+        self.footer_status.set_lines(1)
+        self.footer_status.set_max_width_chars(64)
         footer.append(self.footer_status)
         self.stop_button = Gtk.Button(label="Stop")
         self.stop_button.set_icon_name("media-playback-stop-symbolic")
@@ -643,8 +657,16 @@ class MainWindow(Gtk.ApplicationWindow):
         button.set_tooltip_text(self._profile_tooltip(target))
 
 
+    @staticmethod
+    def _display_text(text: str, limit: int = 40) -> str:
+        value = str(text or "")
+        if len(value) <= limit:
+            return value
+        return value[:limit - 1].rstrip() + "…"
+
     def _set_status(self, text: str, state: str = "neutral") -> None:
-        self.status_text.set_text(text)
+        self.status_text.set_text(self._display_text(text, 40))
+        self.status_text.set_tooltip_text(text)
         self.status_dot.remove_css_class("connected")
         self.status_dot.remove_css_class("warning")
         self.status_dot.remove_css_class("error")
@@ -690,12 +712,14 @@ class MainWindow(Gtk.ApplicationWindow):
             self.speaking_label.set_text("")
             self._append_bubble(payload.get("message", "TTS error"), "system", "vi", "TTS")
         elif event == "log":
-            self.footer_status.set_text(payload.get("message", ""))
+            log_message = str(payload.get("message", ""))
+            self.footer_status.set_text(self._display_text(log_message, 64))
+            self.footer_status.set_tooltip_text(log_message)
 
     def _update_guilds(self, guilds: list[dict], selected_id: int | None) -> None:
         self._loading_dropdowns = True
         self.guilds = {item["id"]: item for item in guilds}
-        names = [item["name"] for item in guilds] or ["Bot chưa có server"]
+        names = [self._display_text(item["name"], 36) for item in guilds] or ["Bot chưa có server"]
         self.guild_dropdown.set_model(Gtk.StringList.new(names))
         ids = list(self.guilds.keys())
         if selected_id in ids:
@@ -709,7 +733,7 @@ class MainWindow(Gtk.ApplicationWindow):
     def _update_voice_channels(self, guild_id: int | None) -> None:
         item = self.guilds.get(guild_id) if guild_id else None
         self.voice_channels = item["voice_channels"] if item else []
-        names = [channel["name"] for channel in self.voice_channels] or ["Không có voice channel"]
+        names = [self._display_text(channel["name"], 36) for channel in self.voice_channels] or ["Không có voice channel"]
         self.channel_dropdown.set_model(Gtk.StringList.new(names))
         selected = next(
             (index for index, channel in enumerate(self.voice_channels)
@@ -1053,7 +1077,13 @@ class MainWindow(Gtk.ApplicationWindow):
         label.set_xalign(0)
         label.set_hexpand(True)
         label.set_ellipsize(Pango.EllipsizeMode.END)
-        label.set_max_width_chars(36)
+        label.set_wrap(True)
+        label.set_wrap_mode(Pango.WrapMode.CHAR)
+        if hasattr(label, "set_natural_wrap_mode"):
+            label.set_natural_wrap_mode(Pango.WrapMode.CHAR)
+        label.set_lines(1)
+        label.set_width_chars(18)
+        label.set_max_width_chars(24)
         contents.append(label)
         contents.append(Gtk.Image.new_from_icon_name("pan-down-symbolic"))
         button.set_child(contents)
