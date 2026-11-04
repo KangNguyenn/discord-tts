@@ -64,7 +64,10 @@ def _preview_process_main(connection, voice_dir: str, output_dir: str) -> None:
                     wav_path.unlink(missing_ok=True)
                 break
     finally:
-        engine.release_voice()
+        try:
+            engine.release_voice()
+        except Exception:
+            logger.exception("Could not release Piper voice in preview worker")
         for path in generated_paths:
             path.unlink(missing_ok=True)
         try:
@@ -91,6 +94,7 @@ class PreviewWorker:
         self._temp_dir: Path | None = None
         self._generation = 0
         self._request_in_flight = False
+        self._active_request_id: int | None = None
         self._closed = False
         self._blocked = False
 
@@ -167,6 +171,7 @@ class PreviewWorker:
                 return False
 
             self._request_in_flight = True
+            self._active_request_id = request_id
             return True
 
     def _read_results(self, connection, generation: int) -> None:
@@ -180,6 +185,7 @@ class PreviewWorker:
                 current = generation == self._generation and not self._closed
                 if current:
                     self._request_in_flight = False
+                    self._active_request_id = None
 
             if current:
                 try:
@@ -189,9 +195,13 @@ class PreviewWorker:
             else:
                 self._remove_result_file(message)
 
+        failure_request_id = None
         with self._lock:
             if generation == self._generation:
+                if self._request_in_flight:
+                    failure_request_id = self._active_request_id
                 self._request_in_flight = False
+                self._active_request_id = None
                 process, self._process = self._process, None
                 self._connection = None
                 if process is not None:
@@ -207,6 +217,15 @@ class PreviewWorker:
                 temp_dir, self._temp_dir = self._temp_dir, None
                 if temp_dir is not None:
                     shutil.rmtree(temp_dir, ignore_errors=True)
+        if failure_request_id is not None:
+            try:
+                self._result_callback({
+                    "request_id": failure_request_id,
+                    "ok": False,
+                    "error": "Preview Worker đã dừng bất ngờ trong lúc tổng hợp.",
+                })
+            except Exception:
+                logger.exception("Could not report preview worker exit")
         try:
             connection.close()
         except OSError:
@@ -246,6 +265,7 @@ class PreviewWorker:
         self._generation += 1
         was_busy = self._request_in_flight
         self._request_in_flight = False
+        self._active_request_id = None
         process, self._process = self._process, None
         connection, self._connection = self._connection, None
         self._reader_thread = None
