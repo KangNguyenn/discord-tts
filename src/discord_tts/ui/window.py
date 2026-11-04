@@ -401,6 +401,7 @@ class MainWindow(Gtk.ApplicationWindow):
             if hasattr(item_title, "set_natural_wrap_mode"):
                 item_title.set_natural_wrap_mode(Pango.WrapMode.CHAR)
             item_title.set_lines(1)
+            item_title.set_width_chars(12)
             item_title.set_max_width_chars(12)
             item_button.set_child(item_title)
             item_button.set_tooltip_text(f'{item["title"]}\n{item["text"]}')
@@ -424,6 +425,7 @@ class MainWindow(Gtk.ApplicationWindow):
             if hasattr(profile_label, "set_natural_wrap_mode"):
                 profile_label.set_natural_wrap_mode(Pango.WrapMode.CHAR)
             profile_label.set_lines(1)
+            profile_label.set_width_chars(12)
             profile_label.set_max_width_chars(12)
             profile_label.set_tooltip_text(
                 f"{model_name} · {speaker_name} · speed {item['speed']} · volume {item['volume']}"
