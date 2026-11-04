@@ -87,6 +87,34 @@ Lịch sử chat và dữ liệu Quick Chat được lưu trong:
 
 Bot Token được lưu trên máy dưới dạng văn bản, với quyền truy cập giới hạn cho tài khoản Linux hiện tại. Không chia sẻ tệp cấu hình này.
 
+## Build Flatpak trên Arch Linux / CachyOS
+
+Cài công cụ build:
+
+```bash
+sudo pacman -S --needed flatpak flatpak-builder
+```
+
+Từ thư mục mã nguồn, chạy:
+
+```bash
+bash scripts/build-flatpak.sh
+```
+
+Bundle được tạo tại `dist/Discord-TTS.flatpak`. Cài cho tài khoản hiện tại, không cần `sudo`:
+
+```bash
+flatpak install --user ./dist/Discord-TTS.flatpak
+```
+
+Script tự thêm Flathub vào user installation nếu chưa có, tải GNOME SDK/runtime cần thiết, build ứng dụng rồi xóa thư mục build và cache tạm. Nếu GNOME SDK chưa có trước đó, script sẽ gỡ SDK sau khi build; GNOME Platform được giữ lại vì ứng dụng cần runtime này để chạy. Gói công cụ `flatpak-builder` cài bằng pacman cũng được giữ lại để có thể build lần sau.
+
+Có thể đổi vị trí bundle bằng biến môi trường `OUTPUT_FILE`:
+
+```bash
+OUTPUT_FILE="$HOME/Downloads/Discord-TTS.flatpak" bash scripts/build-flatpak.sh
+```
+
 ## Đóng góp và đóng gói
 
 Dự án hiện hướng tới Linux desktop. GitHub Actions có workflow để build gói Flatpak x86_64; xem tab **Actions** của repository để chạy và tải artifact.
