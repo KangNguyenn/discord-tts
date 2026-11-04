@@ -111,12 +111,12 @@ fi
 log "Đóng gói runtime có thể di chuyển..."
 mkdir -p -- "$(dirname -- "$RUNTIME_ARCHIVE")"
 "$ENV_DIR/bin/conda-pack" --prefix "$ENV_DIR" --format tar.gz --output "$RUNTIME_ARCHIVE"
+chmod 0644 "$RUNTIME_ARCHIVE"
 
 log "Tạo AppDir..."
 mkdir -p "$APPDIR/usr/share/applications" "$APPDIR/usr/share/icons/hicolor/128x128/apps"
 cp "$PROJECT_ROOT/packaging/appimage/discord-tts.desktop" "$APPDIR/discord-tts.desktop"
 cp "$PROJECT_ROOT/packaging/appimage/discord-tts.png" "$APPDIR/discord-tts.png"
-cp "$PROJECT_ROOT/packaging/appimage/discord-tts.png" "$APPDIR/.DirIcon"
 cp "$PROJECT_ROOT/packaging/appimage/discord-tts.desktop" "$APPDIR/usr/share/applications/discord-tts.desktop"
 cp "$PROJECT_ROOT/packaging/appimage/discord-tts.png" "$APPDIR/usr/share/icons/hicolor/128x128/apps/discord-tts.png"
 cp "$PROJECT_ROOT/packaging/appimage/AppRun" "$APPDIR/AppRun"
