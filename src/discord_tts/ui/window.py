@@ -1063,6 +1063,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 details.set_hexpand(True)
                 radio.set_hexpand(True)
                 radio.set_child(details)
+                radio.set_cursor_from_name("pointer")
                 radio.set_tooltip_text(f"Chọn model: {model.display_name}")
                 name = Gtk.Label(label=model.display_name)
                 name.set_xalign(0)
