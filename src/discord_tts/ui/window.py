@@ -1209,7 +1209,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self, _button: Gtk.Button, profile: VoiceProfile, on_save
     ) -> None:
         if self._preview_worker is not None:
-            self._preview_worker.close()
+            self._close_voice_picker_resources(self._voice_picker_generation)
         self._preview_buttons.clear()
         self._preview_synthesizing = False
         self._voice_picker_generation += 1
@@ -1349,7 +1349,9 @@ class MainWindow(Gtk.ApplicationWindow):
                     "media-playback-start-symbolic"
                 )
                 play_button.set_tooltip_text("Nghe thử model này")
-                play_button.set_sensitive(not self._speech_busy)
+                play_button.set_sensitive(
+                    not self._speech_busy and not self._speech_busy_signal.is_set()
+                )
                 self._preview_buttons.append(play_button)
                 play_button.connect(
                     "clicked",
@@ -1446,6 +1448,7 @@ class MainWindow(Gtk.ApplicationWindow):
             "close-request",
             lambda *_args: (self._close_voice_picker_resources(picker_generation), False)[1],
         )
+        self._update_preview_buttons()
         dialog.present()
 
     def _make_scale_row(
