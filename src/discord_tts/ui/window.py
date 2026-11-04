@@ -156,6 +156,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self.chat_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         self.chat_scroll.set_propagate_natural_width(False)
         self.chat_scroll.set_propagate_natural_height(False)
+        # Keep the viewport's minimum size independent of the message history.
+        # The list may become arbitrarily tall, but it must scroll inside this
+        # viewport instead of increasing the top-level window's minimum size.
+        self.chat_scroll.set_min_content_width(1)
+        self.chat_scroll.set_min_content_height(1)
         self.chat_scroll.set_hexpand(True)
         self.chat_scroll.set_vexpand(True)
         self.chat_scroll.set_child(self.chat_list)
@@ -302,9 +307,12 @@ class MainWindow(Gtk.ApplicationWindow):
     def _append_bubble(self, text: str, direction: str, language: str, author: str, timestamp: str | None = None) -> None:
         row = Gtk.ListBoxRow()
         row.add_css_class("chat-row")
-        line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        # A homogeneous four-column grid gives each bubble a proportional
+        # three-quarter-width area. This scales with the Conversation viewport
+        # instead of imposing a fixed pixel or character width.
+        line = Gtk.Grid()
         line.set_hexpand(True)
-        line.set_halign(Gtk.Align.FILL)
+        line.set_column_homogeneous(True)
         bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         bubble.set_halign(Gtk.Align.END if direction == "outgoing" else Gtk.Align.START)
         bubble.add_css_class("chat-bubble")
@@ -317,7 +325,6 @@ class MainWindow(Gtk.ApplicationWindow):
         message.set_hexpand(True)
         message.set_selectable(True)
         message.set_width_chars(1)
-        message.set_max_width_chars(64)
         bubble.append(message)
         try:
             time = datetime.fromisoformat(timestamp).astimezone().strftime("%H:%M") if timestamp else datetime.now().strftime("%H:%M")
@@ -328,7 +335,11 @@ class MainWindow(Gtk.ApplicationWindow):
         meta.set_xalign(1 if direction == "outgoing" else 0)
         meta.add_css_class("chat-meta")
         bubble.append(meta)
-        line.append(bubble)
+        # Leave one grid column empty beside the bubble; its available
+        # width therefore follows the current viewport width as the window is
+        # manually resized. WORD_CHAR wrapping also handles unbroken strings.
+        column = 1 if direction == "outgoing" else 0
+        line.attach(bubble, column, 0, 3, 1)
         row.set_child(line)
         row.set_hexpand(True)
         self.chat_list.append(row)
