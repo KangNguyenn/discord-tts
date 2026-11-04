@@ -192,10 +192,25 @@ class PreviewWorker:
         with self._lock:
             if generation == self._generation:
                 self._request_in_flight = False
-                if self._process is not None and not self._process.is_alive():
-                    self._process.join(timeout=0)
-                    self._process = None
-                    self._connection = None
+                process, self._process = self._process, None
+                self._connection = None
+                if process is not None:
+                    process.join(timeout=0.2)
+                    if process.is_alive():
+                        process.terminate()
+                        process.join(timeout=0.5)
+                    if process.is_alive() and hasattr(process, "kill"):
+                        process.kill()
+                        process.join(timeout=0.5)
+                    if not process.is_alive():
+                        process.close()
+                temp_dir, self._temp_dir = self._temp_dir, None
+                if temp_dir is not None:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+        try:
+            connection.close()
+        except OSError:
+            pass
 
     @staticmethod
     def _remove_result_file(message: dict) -> None:
@@ -260,4 +275,14 @@ class PreviewWorker:
         if temp_dir is not None:
             shutil.rmtree(temp_dir, ignore_errors=True)
         if process is not None:
+            if not process.is_alive():
+                try:
+                    process.close()
+                except ValueError:
+                    pass
+            else:
+                logger.error(
+                    "Preview worker process did not exit cleanly (pid=%s)",
+                    process.pid,
+                )
             logger.info("Stopped preview worker process (pid=%s)", process.pid)
