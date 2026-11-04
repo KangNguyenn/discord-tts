@@ -350,6 +350,11 @@ class MainWindow(Gtk.ApplicationWindow):
         meta = Gtk.Label(label=f"{author} · {language_tag} · {time}")
         meta.set_xalign(1 if direction == "outgoing" else 0)
         meta.set_ellipsize(Pango.EllipsizeMode.END)
+        meta.set_wrap(True)
+        meta.set_wrap_mode(Pango.WrapMode.CHAR)
+        if hasattr(meta, "set_natural_wrap_mode"):
+            meta.set_natural_wrap_mode(Pango.WrapMode.CHAR)
+        meta.set_lines(1)
         meta.set_max_width_chars(32)
         meta.add_css_class("chat-meta")
         bubble.append(meta)
@@ -391,6 +396,11 @@ class MainWindow(Gtk.ApplicationWindow):
             item_button.set_halign(Gtk.Align.START)
             item_title = Gtk.Label(label=item["title"])
             item_title.set_ellipsize(Pango.EllipsizeMode.END)
+            item_title.set_wrap(True)
+            item_title.set_wrap_mode(Pango.WrapMode.CHAR)
+            if hasattr(item_title, "set_natural_wrap_mode"):
+                item_title.set_natural_wrap_mode(Pango.WrapMode.CHAR)
+            item_title.set_lines(1)
             item_title.set_max_width_chars(12)
             item_button.set_child(item_title)
             item_button.set_tooltip_text(f'{item["title"]}\n{item["text"]}')
@@ -409,6 +419,11 @@ class MainWindow(Gtk.ApplicationWindow):
             )
             profile_label.add_css_class("dim-label")
             profile_label.set_ellipsize(Pango.EllipsizeMode.END)
+            profile_label.set_wrap(True)
+            profile_label.set_wrap_mode(Pango.WrapMode.CHAR)
+            if hasattr(profile_label, "set_natural_wrap_mode"):
+                profile_label.set_natural_wrap_mode(Pango.WrapMode.CHAR)
+            profile_label.set_lines(1)
             profile_label.set_max_width_chars(12)
             profile_label.set_tooltip_text(
                 f"{model_name} · {speaker_name} · speed {item['speed']} · volume {item['volume']}"
