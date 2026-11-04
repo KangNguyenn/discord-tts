@@ -49,8 +49,8 @@ class WavPCMAudio(discord.AudioSource):
 
     Discord's voice player expects 20 ms of 48 kHz, signed 16-bit, stereo PCM
     per read (3,840 bytes). Piper commonly produces 22.05 kHz mono WAV files.
-    Linear interpolation is sufficient for short TTS clips and avoids an FFmpeg
-    subprocess in the Flatpak sandbox.
+    Linear interpolation is sufficient for short TTS clips and avoids spawning
+    an FFmpeg subprocess for every playback.
     """
 
     OUTPUT_RATE = 48_000
