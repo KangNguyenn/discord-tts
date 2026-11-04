@@ -833,10 +833,9 @@ class MainWindow(Gtk.ApplicationWindow):
         reader_note.add_css_class("dim-label")
         content.append(reader_note)
 
-        reader_voice_button = Gtk.Button(
-            label=self._voice_button_label(self.config.discord_reader.model_id)
+        reader_voice_button = self._make_voice_button(
+            self.config.discord_reader.model_id
         )
-        reader_voice_button.set_icon_name("pan-down-symbolic")
         reader_voice_button.set_hexpand(True)
         reader_voice_button.set_tooltip_text(
             self._profile_tooltip(self.config.discord_reader)
@@ -941,6 +940,7 @@ class MainWindow(Gtk.ApplicationWindow):
         contents = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         label = Gtk.Label(label=self._voice_button_label(model_id))
         label.set_xalign(0)
+        label.set_hexpand(True)
         label.set_ellipsize(3)
         label.set_max_width_chars(36)
         contents.append(label)
