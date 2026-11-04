@@ -87,6 +87,3 @@ Lịch sử chat và dữ liệu Quick Chat được lưu trong:
 
 Bot Token được lưu trên máy dưới dạng văn bản, với quyền truy cập giới hạn cho tài khoản Linux hiện tại. Không chia sẻ tệp cấu hình này.
 
-## Đóng góp và đóng gói
-
-Dự án hiện hướng tới Linux desktop. GitHub Actions có workflow để build gói Flatpak x86_64; xem tab **Actions** của repository để chạy và tải artifact.
