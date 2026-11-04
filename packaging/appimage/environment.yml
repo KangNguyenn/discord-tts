@@ -10,6 +10,5 @@ dependencies:
   - gdk-pixbuf
   - adwaita-icon-theme
   - hicolor-icon-theme
-  - gsettings-desktop-schemas
   - libopus
   - conda-pack
