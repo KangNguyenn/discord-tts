@@ -7,6 +7,9 @@ dependencies:
   - pygobject
   - gtk4
   - gobject-introspection
+  - gstreamer
+  - gst-plugins-base
+  - gst-plugins-good
   - gdk-pixbuf
   - adwaita-icon-theme
   - hicolor-icon-theme
