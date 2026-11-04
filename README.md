@@ -15,7 +15,7 @@
 Cài các gói cần thiết:
 
 ```bash
-sudo pacman -S --needed git gtk4 python-gobject python-pip opus
+sudo pacman -S --needed git gtk4 python-gobject python-pip opus gstreamer gst-plugins-base gst-plugins-good
 ```
 
 Tải mã nguồn và cài ứng dụng:
@@ -51,7 +51,7 @@ chmod +x Discord-TTS-*.AppImage
 ./Discord-TTS-*.AppImage
 ```
 
-AppImage đóng gói Python, GTK4, PyGObject, Piper/ONNX Runtime, Opus và các Python dependencies. Máy vẫn cần desktop Linux có Wayland hoặc X11; driver đồ họa và tích hợp phiên desktop được sử dụng từ host.
+AppImage đóng gói Python, GTK4, PyGObject, GStreamer cùng các plugin phát WAV/PulseAudio, Piper/ONNX Runtime, Opus và các Python dependencies. Máy vẫn cần desktop Linux có Wayland hoặc X11; driver đồ họa và tích hợp phiên desktop được sử dụng từ host.
 
 Ở lần chạy đầu, AppImage giải nén runtime vào:
 
