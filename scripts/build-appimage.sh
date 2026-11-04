@@ -88,9 +88,20 @@ import onnxruntime
 import piper
 
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk
+gi.require_version("Gst", "1.0")
+from gi.repository import Gst, Gtk
+
+Gst.init(None)
+required_factories = ("playbin", "wavparse", "autoaudiosink", "pulsesink")
+missing = [
+    name for name in required_factories
+    if Gst.ElementFactory.find(name) is None
+]
+if missing:
+    raise RuntimeError(f"Missing GStreamer plugins: {', '.join(missing)}")
 
 print(f"GTK: {Gtk.get_major_version()}.{Gtk.get_minor_version()}.{Gtk.get_micro_version()}")
+print(f"GStreamer: {Gst.version_string()} (playbin, WAV parser and PulseAudio sink available)")
 print(f"NumPy: {numpy.__version__}")
 print(f"ONNX Runtime: {onnxruntime.__version__}")
 print(f"discord.py: {discord.__version__}")
