@@ -906,6 +906,7 @@ class MainWindow(Gtk.ApplicationWindow):
             if raw_auto_join_user_id and (
                 not raw_auto_join_user_id.isascii()
                 or not raw_auto_join_user_id.isdigit()
+                or len(raw_auto_join_user_id) > 20
                 or not 0 < int(raw_auto_join_user_id) < 2**64
             ):
                 auto_join_error_label.set_text(
