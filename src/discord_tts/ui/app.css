@@ -1,12 +1,22 @@
-window {
-  background: @window_bg_color;
+window,
+.app-root {
+  background-color: @window_bg_color;
+  color: @window_fg_color;
+}
+
+@media (prefers-color-scheme: dark) {
+  window,
+  .app-root {
+    background-color: #242424;
+    color: #f6f5f4;
+  }
 }
 
 .top-card {
   padding: 14px;
   border: 1px solid alpha(currentColor, 0.10);
   border-radius: 14px;
-  background: alpha(@card_bg_color, 0.72);
+  background: @card_bg_color;
 }
 
 .chat-list {
@@ -25,7 +35,7 @@ window {
   min-width: 90px;
   border-radius: 16px;
   padding: 10px 13px;
-  background: alpha(@card_bg_color, 0.95);
+  background: @card_bg_color;
   border: 1px solid alpha(currentColor, 0.09);
 }
 
@@ -35,7 +45,7 @@ window {
 }
 
 .chat-bubble.incoming {
-  background: alpha(@card_bg_color, 0.98);
+  background: @card_bg_color;
 }
 
 .chat-bubble.system {
@@ -64,7 +74,7 @@ window {
   border: 1px solid alpha(currentColor, 0.22);
   border-radius: 8px;
   padding: 8px;
-  background: alpha(@card_bg_color, 0.55);
+  background: @card_bg_color;
 }
 
 .status-dot {
