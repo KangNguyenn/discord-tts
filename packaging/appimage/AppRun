@@ -103,6 +103,18 @@ if [[ -d "$RUNTIME_DIR/etc/fonts" ]]; then
     export FONTCONFIG_PATH="$RUNTIME_DIR/etc/fonts"
 fi
 
+GST_PLUGIN_DIR="$RUNTIME_DIR/lib/gstreamer-1.0"
+[[ -d "$GST_PLUGIN_DIR" ]] || die "Runtime thiếu thư mục GStreamer plugins."
+export GST_PLUGIN_SYSTEM_PATH_1_0="$GST_PLUGIN_DIR"
+GST_SCANNER="$RUNTIME_DIR/libexec/gstreamer-1.0/gst-plugin-scanner"
+if [[ -x "$GST_SCANNER" ]]; then
+    export GST_PLUGIN_SCANNER="$GST_SCANNER"
+fi
+
+GST_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/discord-tts/gstreamer"
+mkdir -p -- "$GST_CACHE_DIR"
+export GST_REGISTRY="$GST_CACHE_DIR/registry-$RUNTIME_KEY.bin"
+
 if [[ "${DISCORD_TTS_APPIMAGE_SMOKE_TEST:-0}" == "1" ]]; then
     "$RUNTIME_DIR/bin/python" - <<'PY'
 import discord
@@ -110,11 +122,53 @@ import gi
 import numpy
 import onnxruntime
 import piper
+import tempfile
+import wave
+from pathlib import Path
 
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk
+gi.require_version("Gst", "1.0")
+from gi.repository import Gst, Gtk
 
-print(f"AppImage runtime smoke test passed: GTK {Gtk.get_major_version()}.{Gtk.get_minor_version()}.{Gtk.get_micro_version()}, NumPy {numpy.__version__}, ONNX Runtime {onnxruntime.__version__}, discord.py {discord.__version__}, Piper loaded")
+Gst.init(None)
+required_factories = ("playbin", "wavparse", "autoaudiosink", "pulsesink")
+missing = [
+    name for name in required_factories
+    if Gst.ElementFactory.find(name) is None
+]
+if missing:
+    raise RuntimeError(f"Missing GStreamer plugins: {', '.join(missing)}")
+
+with tempfile.TemporaryDirectory(prefix="discord-tts-gst-test-") as temp_dir:
+    sample_path = Path(temp_dir) / "preview-smoke-test.wav"
+    with wave.open(str(sample_path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(48000)
+        wav_file.writeframes(b"\x00\x00" * 4800)
+
+    pipeline = Gst.ElementFactory.make("playbin", "preview-smoke-test")
+    fake_sink = Gst.ElementFactory.make("fakesink", "preview-smoke-test-sink")
+    if pipeline is None or fake_sink is None:
+        raise RuntimeError("Could not create GStreamer test pipeline")
+    pipeline.set_property("audio-sink", fake_sink)
+    pipeline.set_property("uri", sample_path.as_uri())
+    bus = pipeline.get_bus()
+    try:
+        if pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
+            raise RuntimeError("GStreamer test pipeline refused PLAYING state")
+        message = bus.timed_pop_filtered(
+            5 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR
+        )
+        if message is None:
+            raise RuntimeError("GStreamer WAV playback smoke test timed out")
+        if message.type == Gst.MessageType.ERROR:
+            error, debug = message.parse_error()
+            raise RuntimeError(f"GStreamer WAV playback failed: {error} ({debug})")
+    finally:
+        pipeline.set_state(Gst.State.NULL)
+
+print(f"AppImage runtime smoke test passed: GTK {Gtk.get_major_version()}.{Gtk.get_minor_version()}.{Gtk.get_micro_version()}, GStreamer {Gst.version_string()}, NumPy {numpy.__version__}, ONNX Runtime {onnxruntime.__version__}, discord.py {discord.__version__}, Piper loaded; WAV playback pipeline passed")
 PY
     exit 0
 fi
