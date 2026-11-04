@@ -244,6 +244,7 @@ class PreviewWorker:
 
     def _stop_process_locked(self, force: bool) -> None:
         self._generation += 1
+        was_busy = self._request_in_flight
         self._request_in_flight = False
         process, self._process = self._process, None
         connection, self._connection = self._connection, None
@@ -252,7 +253,7 @@ class PreviewWorker:
         if process is not None:
             process_id = process.pid
             if process.is_alive():
-                if not force and connection is not None:
+                if not force and not was_busy and connection is not None:
                     try:
                         connection.send({"action": "shutdown"})
                     except (BrokenPipeError, EOFError, OSError):
