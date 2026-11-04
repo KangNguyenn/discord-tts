@@ -42,13 +42,18 @@ class VoiceModel:
 
 
 class PiperEngine:
-    """Piper wrapper that keeps only the most recently used ONNX voice loaded."""
+    """Piper wrapper with one shared, idle-released ONNX voice cache."""
+
+    _VOICE_IDLE_TIMEOUT_SECONDS = 20.0
 
     def __init__(self, voice_dir: Path = VOICE_DIR):
         self.voice_dir = voice_dir
         self._voice: Any | None = None
         self._voice_path: str | None = None
         self._lock = threading.RLock()
+        self._speech_busy = threading.Event()
+        self._release_timer: threading.Timer | None = None
+        self._cache_generation = 0
 
     @staticmethod
     def _language_name(language: dict[str, Any], code: str) -> str:
@@ -220,9 +225,56 @@ class PiperEngine:
             )
         return model
 
-    def release_voice(self) -> None:
-        """Release the cached ONNX voice when it is no longer needed."""
+    def set_speech_busy(self, busy: bool) -> None:
+        """Prevent new preview synthesis while real Discord TTS is active."""
+        if busy:
+            self._speech_busy.set()
+        else:
+            self._speech_busy.clear()
+
+    def _cancel_release_timer_locked(self) -> int:
+        self._cache_generation += 1
+        timer, self._release_timer = self._release_timer, None
+        if timer is not None:
+            timer.cancel()
+        return self._cache_generation
+
+    def _schedule_voice_release_locked(self) -> None:
+        generation = self._cancel_release_timer_locked()
+        if self._voice is None:
+            return
+        timer = threading.Timer(
+            self._VOICE_IDLE_TIMEOUT_SECONDS,
+            self._release_voice_if_idle,
+            args=(generation,),
+        )
+        timer.daemon = True
+        self._release_timer = timer
+        timer.start()
+        logger.debug(
+            "Scheduled Piper model release in %.0f seconds",
+            self._VOICE_IDLE_TIMEOUT_SECONDS,
+        )
+
+    def _release_voice_if_idle(self, generation: int) -> None:
         with self._lock:
+            if generation != self._cache_generation:
+                return
+            self._release_timer = None
+            previous_model = self._voice_path
+            self._voice = None
+            self._voice_path = None
+            if previous_model is not None:
+                gc.collect()
+                logger.info(
+                    "Released idle Piper model after %.0f seconds: %s",
+                    self._VOICE_IDLE_TIMEOUT_SECONDS, previous_model,
+                )
+
+    def release_voice(self) -> None:
+        """Immediately release the cached ONNX voice and its idle timer."""
+        with self._lock:
+            self._cancel_release_timer_locked()
             previous_model = self._voice_path
             self._voice = None
             self._voice_path = None
@@ -237,6 +289,7 @@ class PiperEngine:
         speed: float = 1.0,
         volume: float = 1.0,
         speaker_id: int = 0,
+        preview: bool = False,
     ) -> Path:
         text = text.strip()
         if not text:
@@ -253,46 +306,61 @@ class PiperEngine:
         model_path = model_info.path
         model_key = str(model_path)
         with self._lock:
-            if self._voice is None or self._voice_path != model_key:
-                previous_model = self._voice_path
-                # Drop the previous ONNX session before loading another model.
-                # PiperVoice owns the runtime session and its model allocations.
-                self._voice = None
-                self._voice_path = None
-                if previous_model is not None:
-                    gc.collect()
-                    logger.info(
-                        "Released cached Piper model before switching: %s",
-                        previous_model,
-                    )
+            # A preview that was waiting behind real TTS must not start after
+            # the bot has claimed the shared synthesis engine.
+            if preview and self._speech_busy.is_set():
+                raise TTSUnavailable(
+                    "Không thể preview khi bot đang xử lý hoặc phát TTS."
+                )
 
-                voice = PiperVoice.load(model_key)
-                self._voice = voice
-                self._voice_path = model_key
-                logger.info("Loaded Piper model into the single-model cache: %s", model_key)
-            else:
-                voice = self._voice
-
-            output = tempfile.NamedTemporaryFile(
-                prefix="discord-tts-", suffix=".wav", delete=False
-            )
-            output_path = Path(output.name)
-            output.close()
-            selected_speaker = None
-            if model_info.num_speakers > 1:
-                if not 0 <= int(speaker_id) < model_info.num_speakers:
-                    speaker_id = model_info.default_speaker_id
-                selected_speaker = int(speaker_id)
-
-            config = SynthesisConfig(
-                volume=max(0.1, min(2.0, float(volume))),
-                length_scale=1.0 / max(0.5, min(2.0, float(speed))),
-                speaker_id=selected_speaker,
-            )
+            self._cancel_release_timer_locked()
             try:
-                with wave.open(str(output_path), "wb") as wav_file:
-                    voice.synthesize_wav(text, wav_file, syn_config=config)
-            except Exception:
-                output_path.unlink(missing_ok=True)
-                raise
-            return output_path
+                if self._voice is None or self._voice_path != model_key:
+                    previous_model = self._voice_path
+                    # Drop the previous ONNX session before loading another model.
+                    # PiperVoice owns the runtime session and its model allocations.
+                    self._voice = None
+                    self._voice_path = None
+                    if previous_model is not None:
+                        gc.collect()
+                        logger.info(
+                            "Released cached Piper model before switching: %s",
+                            previous_model,
+                        )
+
+                    voice = PiperVoice.load(model_key)
+                    self._voice = voice
+                    self._voice_path = model_key
+                    logger.info(
+                        "Loaded Piper model into the single-model cache: %s", model_key
+                    )
+                else:
+                    voice = self._voice
+
+                output = tempfile.NamedTemporaryFile(
+                    prefix="discord-tts-", suffix=".wav", delete=False
+                )
+                output_path = Path(output.name)
+                output.close()
+                selected_speaker = None
+                if model_info.num_speakers > 1:
+                    if not 0 <= int(speaker_id) < model_info.num_speakers:
+                        speaker_id = model_info.default_speaker_id
+                    selected_speaker = int(speaker_id)
+
+                config = SynthesisConfig(
+                    volume=max(0.1, min(2.0, float(volume))),
+                    length_scale=1.0 / max(0.5, min(2.0, float(speed))),
+                    speaker_id=selected_speaker,
+                )
+                try:
+                    with wave.open(str(output_path), "wb") as wav_file:
+                        voice.synthesize_wav(text, wav_file, syn_config=config)
+                except Exception:
+                    output_path.unlink(missing_ok=True)
+                    raise
+                return output_path
+            finally:
+                # Preview and real TTS share the same cache lifetime. The
+                # model stays warm briefly, then is evicted after inactivity.
+                self._schedule_voice_release_locked()
