@@ -150,18 +150,9 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self.chat_list = Gtk.ListBox()
         self.chat_list.set_selection_mode(Gtk.SelectionMode.NONE)
-        self.chat_list.set_hexpand(True)
         self.chat_list.add_css_class("chat-list")
         self.chat_scroll = Gtk.ScrolledWindow()
         self.chat_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        self.chat_scroll.set_propagate_natural_width(False)
-        self.chat_scroll.set_propagate_natural_height(False)
-        # Keep the viewport's minimum size independent of the message history.
-        # The list may become arbitrarily tall, but it must scroll inside this
-        # viewport instead of increasing the top-level window's minimum size.
-        self.chat_scroll.set_min_content_width(1)
-        self.chat_scroll.set_min_content_height(1)
-        self.chat_scroll.set_hexpand(True)
         self.chat_scroll.set_vexpand(True)
         self.chat_scroll.set_child(self.chat_list)
         self.chat_scroll.add_css_class("top-card")
@@ -307,24 +298,17 @@ class MainWindow(Gtk.ApplicationWindow):
     def _append_bubble(self, text: str, direction: str, language: str, author: str, timestamp: str | None = None) -> None:
         row = Gtk.ListBoxRow()
         row.add_css_class("chat-row")
-        # A homogeneous four-column grid gives each bubble a proportional
-        # three-quarter-width area. This scales with the Conversation viewport
-        # instead of imposing a fixed pixel or character width.
-        line = Gtk.Grid()
-        line.set_hexpand(True)
-        line.set_column_homogeneous(True)
+        line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        line.set_halign(Gtk.Align.END if direction == "outgoing" else Gtk.Align.START)
         bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        bubble.set_halign(Gtk.Align.END if direction == "outgoing" else Gtk.Align.START)
         bubble.add_css_class("chat-bubble")
         bubble.add_css_class(direction)
         message = Gtk.Label(label=text)
         message.set_wrap(True)
         message.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         message.set_xalign(0)
-        message.set_halign(Gtk.Align.FILL)
-        message.set_hexpand(True)
         message.set_selectable(True)
-        message.set_width_chars(1)
+        message.set_max_width_chars(64)
         bubble.append(message)
         try:
             time = datetime.fromisoformat(timestamp).astimezone().strftime("%H:%M") if timestamp else datetime.now().strftime("%H:%M")
@@ -335,19 +319,8 @@ class MainWindow(Gtk.ApplicationWindow):
         meta.set_xalign(1 if direction == "outgoing" else 0)
         meta.add_css_class("chat-meta")
         bubble.append(meta)
-        # Leave one grid column empty beside the bubble; its available
-        # width therefore follows the current viewport width as the window is
-        # manually resized. WORD_CHAR wrapping also handles unbroken strings.
-        spacer = Gtk.Box()
-        spacer.set_hexpand(True)
-        if direction == "outgoing":
-            line.attach(spacer, 0, 0, 1, 1)
-            line.attach(bubble, 1, 0, 3, 1)
-        else:
-            line.attach(bubble, 0, 0, 3, 1)
-            line.attach(spacer, 3, 0, 1, 1)
+        line.append(bubble)
         row.set_child(line)
-        row.set_hexpand(True)
         self.chat_list.append(row)
         GLib.idle_add(self._scroll_chat_to_bottom)
 
@@ -496,6 +469,7 @@ class MainWindow(Gtk.ApplicationWindow):
         text_label = Gtk.Label(label="Nội dung nói")
         text_label.set_xalign(0)
         text_view = Gtk.TextView()
+        text_view.add_css_class("quick-chat-editor")
         text_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         text_view.set_size_request(-1, 96)
         if item:
@@ -1087,6 +1061,9 @@ class MainWindow(Gtk.ApplicationWindow):
 
                 details = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
                 details.set_hexpand(True)
+                radio.set_hexpand(True)
+                radio.set_child(details)
+                radio.set_tooltip_text(f"Chọn model: {model.display_name}")
                 name = Gtk.Label(label=model.display_name)
                 name.set_xalign(0)
                 name.add_css_class("heading")
@@ -1119,7 +1096,6 @@ class MainWindow(Gtk.ApplicationWindow):
                         ),
                 )
                 top_row.append(radio)
-                top_row.append(details)
                 top_row.append(play_button)
                 card.append(top_row)
 
