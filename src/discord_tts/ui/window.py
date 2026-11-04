@@ -338,8 +338,14 @@ class MainWindow(Gtk.ApplicationWindow):
         # Leave one grid column empty beside the bubble; its available
         # width therefore follows the current viewport width as the window is
         # manually resized. WORD_CHAR wrapping also handles unbroken strings.
-        column = 1 if direction == "outgoing" else 0
-        line.attach(bubble, column, 0, 3, 1)
+        spacer = Gtk.Box()
+        spacer.set_hexpand(True)
+        if direction == "outgoing":
+            line.attach(spacer, 0, 0, 1, 1)
+            line.attach(bubble, 1, 0, 3, 1)
+        else:
+            line.attach(bubble, 0, 0, 3, 1)
+            line.attach(spacer, 3, 0, 1, 1)
         row.set_child(line)
         row.set_hexpand(True)
         self.chat_list.append(row)
