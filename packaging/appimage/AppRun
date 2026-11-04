@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+APPDIR="${APPDIR:-$(cd -- "$(dirname -- "$0")" && pwd)}"
+ARCHIVE="$APPDIR/usr/share/discord-tts/runtime.tar.gz"
+VERSION_FILE="$APPDIR/usr/share/discord-tts/runtime-version"
+
+die() {
+    printf '[Discord TTS] ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+[[ -f "$ARCHIVE" ]] || die "Không tìm thấy runtime đi kèm AppImage."
+[[ -f "$VERSION_FILE" ]] || die "Không tìm thấy thông tin phiên bản runtime."
+
+RUNTIME_KEY="$(cat "$VERSION_FILE")"
+[[ -n "$RUNTIME_KEY" ]] || die "Runtime version rỗng."
+
+: "${HOME:?HOME chưa được thiết lập.}"
+CACHE_BASE="${XDG_CACHE_HOME:-$HOME/.cache}/discord-tts/appimage-runtime"
+RUNTIME_DIR="$CACHE_BASE/$RUNTIME_KEY"
+READY_FILE="$RUNTIME_DIR/.discord-tts-ready"
+LOCK_DIR="$CACHE_BASE/.$RUNTIME_KEY.lock"
+LOCK_OWNED=0
+
+cleanup_runtime_lock() {
+    if (( LOCK_OWNED == 1 )); then
+        rm -rf -- "$LOCK_DIR"
+        if [[ ! -f "$READY_FILE" ]]; then
+            rm -rf -- "$RUNTIME_DIR"
+        fi
+    fi
+}
+trap cleanup_runtime_lock EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if [[ ! -f "$READY_FILE" ]]; then
+    mkdir -p -- "$CACHE_BASE"
+
+    waited=0
+    while ! mkdir -- "$LOCK_DIR" 2>/dev/null; do
+        if [[ -f "$READY_FILE" ]]; then
+            break
+        fi
+
+        if [[ -f "$LOCK_DIR/pid" ]]; then
+            lock_pid="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+            if [[ "$lock_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$lock_pid" 2>/dev/null; then
+                rm -rf -- "$LOCK_DIR"
+                continue
+            fi
+        fi
+
+        waited=$((waited + 1))
+        (( waited < 300 )) || die "Đang có tiến trình khác giải nén runtime quá lâu. Kiểm tra $LOCK_DIR."
+        sleep 1
+    done
+
+    if [[ ! -f "$READY_FILE" ]]; then
+        LOCK_OWNED=1
+        printf '%s\n' "$$" > "$LOCK_DIR/pid"
+
+        printf '[Discord TTS] Lần chạy đầu: đang giải nén runtime vào %s\n' "$RUNTIME_DIR"
+        rm -rf -- "$RUNTIME_DIR"
+        mkdir -p -- "$RUNTIME_DIR"
+        tar -xzf "$ARCHIVE" -C "$RUNTIME_DIR"
+
+        [[ -x "$RUNTIME_DIR/bin/python" ]] || die "Runtime giải nén thiếu Python."
+        [[ -f "$RUNTIME_DIR/bin/conda-unpack" ]] || die "Runtime thiếu conda-unpack."
+        "$RUNTIME_DIR/bin/python" "$RUNTIME_DIR/bin/conda-unpack"
+        touch "$READY_FILE"
+
+        rm -rf -- "$LOCK_DIR"
+        LOCK_OWNED=0
+    fi
+fi
+
+[[ -x "$RUNTIME_DIR/bin/discord-tts" ]] || die "Runtime không có lệnh discord-tts."
+
+export CONDA_PREFIX="$RUNTIME_DIR"
+export CONDA_DEFAULT_ENV="discord-tts"
+export PATH="$RUNTIME_DIR/bin:$PATH"
+export LD_LIBRARY_PATH="$RUNTIME_DIR/lib:${LD_LIBRARY_PATH:-}"
+export GI_TYPELIB_PATH="$RUNTIME_DIR/lib/girepository-1.0:${GI_TYPELIB_PATH:-}"
+export GIO_EXTRA_MODULES="$RUNTIME_DIR/lib/gio/modules"
+export XDG_DATA_DIRS="$RUNTIME_DIR/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+export PYTHONNOUSERSITE=1
+
+if [[ -d "$RUNTIME_DIR/share/glib-2.0/schemas" ]]; then
+    export GSETTINGS_SCHEMA_DIR="$RUNTIME_DIR/share/glib-2.0/schemas"
+fi
+
+if [[ -f "$RUNTIME_DIR/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache" ]]; then
+    export GDK_PIXBUF_MODULE_FILE="$RUNTIME_DIR/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache"
+fi
+
+if [[ -d "$RUNTIME_DIR/lib/gtk-4.0" ]]; then
+    export GTK_PATH="$RUNTIME_DIR/lib/gtk-4.0"
+fi
+
+if [[ -d "$RUNTIME_DIR/etc/fonts" ]]; then
+    export FONTCONFIG_PATH="$RUNTIME_DIR/etc/fonts"
+fi
+
+GST_PLUGIN_DIR="$RUNTIME_DIR/lib/gstreamer-1.0"
+[[ -d "$GST_PLUGIN_DIR" ]] || die "Runtime thiếu thư mục GStreamer plugins."
+export GST_PLUGIN_SYSTEM_PATH_1_0="$GST_PLUGIN_DIR"
+GST_SCANNER="$RUNTIME_DIR/libexec/gstreamer-1.0/gst-plugin-scanner"
+if [[ -x "$GST_SCANNER" ]]; then
+    export GST_PLUGIN_SCANNER="$GST_SCANNER"
+fi
+
+GST_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/discord-tts/gstreamer"
+mkdir -p -- "$GST_CACHE_DIR"
+export GST_REGISTRY="$GST_CACHE_DIR/registry-$RUNTIME_KEY.bin"
+
+if [[ "${DISCORD_TTS_APPIMAGE_SMOKE_TEST:-0}" == "1" ]]; then
+    "$RUNTIME_DIR/bin/python" - <<'PY'
+import discord
+import gi
+import numpy
+import onnxruntime
+import piper
+import tempfile
+import wave
+from pathlib import Path
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gst", "1.0")
+from gi.repository import Gst, Gtk
+
+Gst.init(None)
+required_factories = ("playbin", "wavparse", "autoaudiosink", "pulsesink")
+missing = [
+    name for name in required_factories
+    if Gst.ElementFactory.find(name) is None
+]
+if missing:
+    raise RuntimeError(f"Missing GStreamer plugins: {', '.join(missing)}")
+
+with tempfile.TemporaryDirectory(prefix="discord-tts-gst-test-") as temp_dir:
+    sample_path = Path(temp_dir) / "preview-smoke-test.wav"
+    with wave.open(str(sample_path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(48000)
+        wav_file.writeframes(b"\x00\x00" * 4800)
+
+    pipeline = Gst.ElementFactory.make("playbin", "preview-smoke-test")
+    fake_sink = Gst.ElementFactory.make("fakesink", "preview-smoke-test-sink")
+    if pipeline is None or fake_sink is None:
+        raise RuntimeError("Could not create GStreamer test pipeline")
+    pipeline.set_property("audio-sink", fake_sink)
+    pipeline.set_property("uri", sample_path.as_uri())
+    bus = pipeline.get_bus()
+    try:
+        if pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
+            raise RuntimeError("GStreamer test pipeline refused PLAYING state")
+        message = bus.timed_pop_filtered(
+            5 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR
+        )
+        if message is None:
+            raise RuntimeError("GStreamer WAV playback smoke test timed out")
+        if message.type == Gst.MessageType.ERROR:
+            error, debug = message.parse_error()
+            raise RuntimeError(f"GStreamer WAV playback failed: {error} ({debug})")
+    finally:
+        pipeline.set_state(Gst.State.NULL)
+
+print(f"AppImage runtime smoke test passed: GTK {Gtk.get_major_version()}.{Gtk.get_minor_version()}.{Gtk.get_micro_version()}, GStreamer {Gst.version_string()}, NumPy {numpy.__version__}, ONNX Runtime {onnxruntime.__version__}, discord.py {discord.__version__}, Piper loaded; WAV playback pipeline passed")
+PY
+    exit 0
+fi
+
+exec "$RUNTIME_DIR/bin/discord-tts" "$@"

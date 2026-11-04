@@ -1,0 +1,17 @@
+name: discord-tts-appimage
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pygobject
+  - gtk4
+  - gobject-introspection
+  - gstreamer
+  - gst-plugins-base
+  - gst-plugins-good
+  - gdk-pixbuf
+  - adwaita-icon-theme
+  - hicolor-icon-theme
+  - libopus
+  - conda-pack

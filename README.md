@@ -15,7 +15,7 @@
 Cài các gói cần thiết:
 
 ```bash
-sudo pacman -S --needed git gtk4 python-gobject python-pip opus
+sudo pacman -S --needed git gtk4 python-gobject python-pip opus gstreamer gst-plugins-base gst-plugins-good
 ```
 
 Tải mã nguồn và cài ứng dụng:
@@ -41,6 +41,44 @@ Nếu lệnh trên chưa có, chạy bằng:
 ```bash
 python -m discord_tts.main
 ```
+
+## AppImage (x86_64)
+
+Tải `Discord-TTS-*.AppImage` từ GitHub Releases, sau đó chạy:
+
+```bash
+chmod +x Discord-TTS-*.AppImage
+./Discord-TTS-*.AppImage
+```
+
+AppImage đóng gói Python, GTK4, PyGObject, GStreamer cùng các plugin phát WAV/PulseAudio, Piper/ONNX Runtime, Opus và các Python dependencies. Máy vẫn cần desktop Linux có Wayland hoặc X11; driver đồ họa và tích hợp phiên desktop được sử dụng từ host.
+
+Ở lần chạy đầu, AppImage giải nén runtime vào:
+
+```text
+~/.cache/discord-tts/appimage-runtime/
+```
+
+Các lần chạy tiếp theo sử dụng runtime đã giải nén. Cấu hình, Bot Token, lịch sử và voice model vẫn nằm trong các thư mục XDG của người dùng như khi cài từ source. Runtime trong cache có thể xóa để giải phóng dung lượng; lần mở tiếp theo sẽ tự giải nén lại.
+
+Nếu máy không hỗ trợ FUSE, thử:
+
+```bash
+APPIMAGE_EXTRACT_AND_RUN=1 ./Discord-TTS-*.AppImage
+```
+
+### Build AppImage trên Arch Linux / CachyOS
+
+Cần `curl`, `tar` và `bzip2`:
+
+```bash
+sudo pacman -S --needed curl tar bzip2
+./scripts/build-appimage.sh
+```
+
+Script tải Micromamba và appimagetool vào thư mục tạm, tạo runtime đóng gói riêng và tự xóa cache/build tạm sau khi hoàn tất. Không cần sudo để build. File được tạo trong `dist/`, kèm checksum SHA-256.
+
+GitHub Actions cũng build AppImage x86_64 khi chạy thủ công hoặc push tag `v*`; tag sẽ tạo/cập nhật GitHub Release kèm AppImage và checksum.
 
 ## Thiết lập Discord
 
@@ -86,4 +124,3 @@ Lịch sử chat và dữ liệu Quick Chat được lưu trong:
 ```
 
 Bot Token được lưu trên máy dưới dạng văn bản, với quyền truy cập giới hạn cho tài khoản Linux hiện tại. Không chia sẻ tệp cấu hình này.
-
