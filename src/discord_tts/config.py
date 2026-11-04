@@ -64,6 +64,7 @@ class AppConfig:
     discord_activity_type: str = "listening"
     discord_activity_name: str = "Discord TTS"
     discord_streaming_url: str = ""
+    auto_join_user_id: int | None = None
     hide_on_close: bool = True
 
     @classmethod
@@ -106,6 +107,10 @@ class AppConfig:
                 discord_activity_type=str(values.get("discord_activity_type", "listening")),
                 discord_activity_name=str(values.get("discord_activity_name", "Discord TTS")),
                 discord_streaming_url=str(values.get("discord_streaming_url", "")),
+                auto_join_user_id=(
+                    int(values["auto_join_user_id"])
+                    if values.get("auto_join_user_id") is not None else None
+                ),
                 hide_on_close=bool(values.get("hide_on_close", True)),
             )
         except (TypeError, ValueError):
