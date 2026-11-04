@@ -88,6 +88,7 @@ class PreviewWorker:
         self._generation = 0
         self._request_in_flight = False
         self._closed = False
+        self._blocked = False
 
     @property
     def is_busy(self) -> bool:
@@ -133,7 +134,7 @@ class PreviewWorker:
         volume: float,
     ) -> bool:
         with self._lock:
-            if self._closed or self._request_in_flight:
+            if self._closed or self._blocked or self._request_in_flight:
                 return False
             if self._process is None or not self._process.is_alive():
                 self._stop_process_locked(force=True)
@@ -204,7 +205,14 @@ class PreviewWorker:
     def stop_for_speech(self) -> None:
         """Terminate preview immediately so real Discord TTS has priority."""
         with self._lock:
+            self._blocked = True
             self._stop_process_locked(force=True)
+
+    def allow_preview(self) -> None:
+        """Allow preview requests again after real Discord TTS becomes idle."""
+        with self._lock:
+            if not self._closed:
+                self._blocked = False
 
     def close(self) -> None:
         """Permanently close this worker manager when the model dialog closes."""
