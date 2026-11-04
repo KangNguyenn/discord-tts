@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import multiprocessing
+import shutil
+import tempfile
 import threading
 from pathlib import Path
 from typing import Callable
@@ -10,7 +12,7 @@ from typing import Callable
 logger = logging.getLogger(__name__)
 
 
-def _preview_process_main(connection, voice_dir: str) -> None:
+def _preview_process_main(connection, voice_dir: str, output_dir: str) -> None:
     """Process entry point. Keep all Piper/ONNX state isolated from the GTK app."""
     from discord_tts.tts.engine import PiperEngine
 
@@ -39,6 +41,7 @@ def _preview_process_main(connection, voice_dir: str) -> None:
                     request.get("volume", 1.0),
                     request.get("speaker_id", 0),
                     preview=True,
+                    output_dir=Path(output_dir),
                 )
                 generated_paths.add(wav_path)
                 response = {
@@ -85,6 +88,7 @@ class PreviewWorker:
         self._process: multiprocessing.Process | None = None
         self._connection = None
         self._reader_thread: threading.Thread | None = None
+        self._temp_dir: Path | None = None
         self._generation = 0
         self._request_in_flight = False
         self._closed = False
@@ -96,10 +100,11 @@ class PreviewWorker:
             return self._request_in_flight
 
     def _start_locked(self) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix="discord-tts-preview-"))
         parent_connection, child_connection = self._context.Pipe(duplex=True)
         process = self._context.Process(
             target=_preview_process_main,
-            args=(child_connection, self._voice_dir),
+            args=(child_connection, self._voice_dir, str(temp_dir)),
             name="discord-tts-preview",
             daemon=True,
         )
@@ -108,9 +113,11 @@ class PreviewWorker:
         except Exception:
             parent_connection.close()
             child_connection.close()
+            shutil.rmtree(temp_dir, ignore_errors=True)
             raise
         child_connection.close()
 
+        self._temp_dir = temp_dir
         self._generation += 1
         generation = self._generation
         self._process = process
@@ -249,5 +256,8 @@ class PreviewWorker:
                 connection.close()
             except OSError:
                 pass
+        temp_dir, self._temp_dir = self._temp_dir, None
+        if temp_dir is not None:
+            shutil.rmtree(temp_dir, ignore_errors=True)
         if process is not None:
             logger.info("Stopped preview worker process (pid=%s)", process.pid)
