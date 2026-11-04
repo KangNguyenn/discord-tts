@@ -77,6 +77,15 @@ window {
 .status-dot.warning { background: #e5a50a; }
 .status-dot.error { background: #e01b24; }
 
+.quick-chat-scroll {
+  min-width: 0;
+}
+
+.quick-chip {
+  min-width: 0;
+}
+
 .quick-button {
+  min-width: 0;
   border-radius: 999px;
 }
