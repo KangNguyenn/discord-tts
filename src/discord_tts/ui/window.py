@@ -39,12 +39,14 @@ class MainWindow(Gtk.ApplicationWindow):
         self._preview_stop_button: Gtk.Button | None = None
         self._preview_status: Gtk.Label | None = None
 
-        self.set_default_size(760, 760)
         self.set_size_request(560, 600)
         self._load_css()
         self._build_ui()
         self._load_history()
         self._load_quick_chat()
+        # Set the initial geometry after all content is populated. Long
+        # content is constrained by the scroll areas below, not by the window.
+        self.set_default_size(760, 760)
         self.connect("close-request", self._on_close_request)
 
     def set_discord_service(self, service: DiscordService) -> None:
@@ -181,7 +183,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.quick_box.set_min_children_per_line(1)
         self.quick_box.set_row_spacing(5)
         self.quick_box.set_column_spacing(5)
-        self.quick_box.set_homogeneous(False)
+        self.quick_box.set_homogeneous(True)
         self.quick_box.set_hexpand(True)
 
         # Reserve a stable-height area for shortcuts. Extra rows scroll here
@@ -319,16 +321,26 @@ class MainWindow(Gtk.ApplicationWindow):
         row = Gtk.ListBoxRow()
         row.add_css_class("chat-row")
         line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
-        line.set_halign(Gtk.Align.END if direction == "outgoing" else Gtk.Align.START)
+        line.set_hexpand(True)
+        line.set_halign(Gtk.Align.FILL)
         bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         bubble.add_css_class("chat-bubble")
         bubble.add_css_class(direction)
+        bubble.set_hexpand(False)
+        bubble.set_halign(
+            Gtk.Align.END if direction == "outgoing" else Gtk.Align.START
+        )
         message = Gtk.Label(label=text)
         message.set_wrap(True)
-        message.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        message.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        # WORD_CHAR wraps during allocation, but GTK may still measure a
+        # long unbroken token as one word for the natural width request.
+        # CHAR natural wrapping keeps that measurement bounded as well.
+        if hasattr(message, "set_natural_wrap_mode"):
+            message.set_natural_wrap_mode(Pango.WrapMode.CHAR)
         message.set_xalign(0)
         message.set_selectable(True)
-        message.set_max_width_chars(64)
+        message.set_max_width_chars(48)
         bubble.append(message)
         try:
             time = datetime.fromisoformat(timestamp).astimezone().strftime("%H:%M") if timestamp else datetime.now().strftime("%H:%M")
@@ -368,14 +380,20 @@ class MainWindow(Gtk.ApplicationWindow):
             item = dict(row)
             chip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=3)
             chip.add_css_class("quick-chip")
+            chip.set_size_request(286, -1)
+            chip.set_hexpand(False)
+            chip.set_halign(Gtk.Align.START)
 
             item_button = Gtk.Button()
             item_button.add_css_class("quick-button")
+            item_button.set_size_request(112, 34)
+            item_button.set_hexpand(False)
+            item_button.set_halign(Gtk.Align.START)
             item_title = Gtk.Label(label=item["title"])
             item_title.set_ellipsize(Pango.EllipsizeMode.END)
-            item_title.set_max_width_chars(18)
+            item_title.set_max_width_chars(12)
             item_button.set_child(item_title)
-            item_button.set_tooltip_text(item["text"])
+            item_button.set_tooltip_text(f'{item["title"]}\n{item["text"]}')
             item_button.connect("clicked", self._on_quick_clicked, item)
             chip.append(item_button)
 
@@ -391,7 +409,7 @@ class MainWindow(Gtk.ApplicationWindow):
             )
             profile_label.add_css_class("dim-label")
             profile_label.set_ellipsize(Pango.EllipsizeMode.END)
-            profile_label.set_max_width_chars(18)
+            profile_label.set_max_width_chars(12)
             profile_label.set_tooltip_text(
                 f"{model_name} · {speaker_name} · speed {item['speed']} · volume {item['volume']}"
             )
