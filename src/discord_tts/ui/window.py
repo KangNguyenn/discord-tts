@@ -10,6 +10,15 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 
+try:
+    gi.require_version("Gst", "1.0")
+    from gi.repository import Gst
+    Gst.init(None)
+    GST_IMPORT_ERROR: Exception | None = None
+except Exception as exc:
+    Gst = None
+    GST_IMPORT_ERROR = exc
+
 from discord_tts.config import APP_NAME, AppConfig, VoiceProfile, VOICE_DIR
 from discord_tts.services.discord_service import DiscordService
 from discord_tts.services.preview_worker import PreviewWorker
@@ -34,7 +43,9 @@ class MainWindow(Gtk.ApplicationWindow):
         self._loading_dropdowns = False
         self._settings_checks: dict[int, Gtk.CheckButton] = {}
         self._preview_generation = 0
-        self._preview_media: Gtk.MediaFile | None = None
+        self._preview_pipeline = None
+        self._preview_bus = None
+        self._preview_start_timeout_id: int | None = None
         self._preview_path: Path | None = None
         self._preview_button: Gtk.Button | None = None
         self._preview_stop_button: Gtk.Button | None = None
@@ -1522,7 +1533,7 @@ class MainWindow(Gtk.ApplicationWindow):
             )
         if self._preview_stop_button is not None:
             self._preview_stop_button.set_sensitive(
-                self._preview_synthesizing or self._preview_media is not None
+                self._preview_synthesizing or self._preview_pipeline is not None
             )
 
     def _post_preview_worker_result(self, picker_generation: int, result: dict) -> None:
@@ -1651,75 +1662,144 @@ class MainWindow(Gtk.ApplicationWindow):
             wav_path.unlink(missing_ok=True)
             return GLib.SOURCE_REMOVE
 
+        if Gst is None:
+            detail = f" ({GST_IMPORT_ERROR})" if GST_IMPORT_ERROR else ""
+            self._finish_tts_preview(
+                generation,
+                "Không có GStreamer để phát preview. Trên Arch/CachyOS, "
+                "cài gstreamer, gst-plugins-base và gst-plugins-good."
+                + detail,
+            )
+            return GLib.SOURCE_REMOVE
+
         try:
-            media = Gtk.MediaFile.new_for_filename(str(wav_path))
-            media.set_loop(False)
-            media.connect("notify::prepared", self._on_tts_preview_prepared, generation)
-            media.connect("notify::error", self._on_tts_preview_error, generation)
-            media.connect("notify::ended", self._on_tts_preview_ended, generation)
-            self._preview_media = media
+            pipeline = Gst.ElementFactory.make("playbin", "discord-tts-preview")
+            if pipeline is None:
+                raise RuntimeError("GStreamer thiếu plugin playbin.")
+
+            bus = pipeline.get_bus()
+            if bus is None:
+                raise RuntimeError("Không tạo được GStreamer message bus.")
+
+            self._preview_pipeline = pipeline
+            self._preview_bus = bus
             self._preview_path = wav_path
-            media.play()
+            bus.add_signal_watch()
+            bus.connect(
+                "message",
+                self._on_tts_preview_bus_message,
+                generation,
+                pipeline,
+            )
+
+            pipeline.set_property("uri", wav_path.resolve().as_uri())
+            self._preview_start_timeout_id = GLib.timeout_add_seconds(
+                12, self._on_tts_preview_start_timeout, generation, pipeline
+            )
+            state_change = pipeline.set_state(Gst.State.PLAYING)
+            if state_change == Gst.StateChangeReturn.FAILURE:
+                raise RuntimeError("GStreamer không khởi động được audio pipeline.")
+
             if self._preview_status is not None:
                 self._preview_status.set_text(
-                    "Đã tạo WAV. Đang phát trực tiếp qua thiết bị âm thanh của máy…"
+                    "Đã tạo WAV. Đang kết nối thiết bị âm thanh…"
                 )
             self._update_preview_buttons()
             logger.info(
-                "Preview WAV playback started: generation=%d path=%s",
+                "Started GStreamer TTS preview: generation=%d path=%s",
                 generation, wav_path,
             )
         except Exception as exc:
-            logger.exception("Could not start local TTS preview (generation=%d)", generation)
-            self._finish_tts_preview(generation, f"Không phát được preview: {exc}")
+            logger.exception(
+                "Could not start GStreamer TTS preview (generation=%d)", generation
+            )
+            self._finish_tts_preview(
+                generation, f"Không phát được preview: {exc}"
+            )
         return GLib.SOURCE_REMOVE
 
-    def _on_tts_preview_prepared(self, media, _pspec, generation: int) -> None:
-        if generation != self._preview_generation or media is not self._preview_media:
-            return
-        error = media.get_error()
-        if error is not None:
-            self._finish_tts_preview(generation, f"Lỗi audio backend: {error}")
-        elif not media.has_audio():
-            self._finish_tts_preview(
-                generation, "File WAV đã tạo nhưng GTK không nhận diện được track âm thanh."
-            )
-        elif self._preview_status is not None:
-            self._preview_status.set_text(
-                "Model đã tạo WAV có audio; đang thử phát qua âm thanh hệ thống."
-            )
-
-    def _on_tts_preview_error(self, media, _pspec, generation: int) -> None:
-        if generation != self._preview_generation or media is not self._preview_media:
-            return
-        error = media.get_error()
-        if error is not None:
-            logger.error("Local TTS preview playback failed: %s", error)
-            self._finish_tts_preview(generation, f"Không phát được preview: {error}")
-
-    def _on_tts_preview_ended(self, media, _pspec, generation: int) -> None:
+    def _on_tts_preview_bus_message(
+        self, _bus, message, generation: int, pipeline
+    ) -> None:
         if (
-            generation == self._preview_generation
-            and media is self._preview_media
-            and media.get_ended()
+            generation != self._preview_generation
+            or pipeline is not self._preview_pipeline
         ):
+            return
+
+        if message.type == Gst.MessageType.ERROR:
+            error, debug = message.parse_error()
+            detail = f"{error}"
+            if debug:
+                detail = f"{detail} ({debug})"
+            logger.error("GStreamer preview error: %s", detail)
+            self._finish_tts_preview(generation, f"Lỗi audio backend: {detail}")
+        elif message.type == Gst.MessageType.EOS:
             self._finish_tts_preview(generation, "Nghe thử hoàn tất.")
+        elif (
+            message.type == Gst.MessageType.STATE_CHANGED
+            and message.src == pipeline
+        ):
+            _old_state, new_state, _pending_state = message.parse_state_changed()
+            if new_state == Gst.State.PLAYING:
+                if self._preview_start_timeout_id is not None:
+                    GLib.source_remove(self._preview_start_timeout_id)
+                    self._preview_start_timeout_id = None
+                if self._preview_status is not None:
+                    self._preview_status.set_text("Đang phát nghe thử…")
+
+    def _on_tts_preview_start_timeout(
+        self, generation: int, pipeline
+    ) -> bool:
+        self._preview_start_timeout_id = None
+        if (
+            generation != self._preview_generation
+            or pipeline is not self._preview_pipeline
+        ):
+            return GLib.SOURCE_REMOVE
+
+        try:
+            _result, current_state, _pending_state = pipeline.get_state(0)
+        except Exception:
+            current_state = Gst.State.NULL
+
+        if current_state != Gst.State.PLAYING:
+            self._finish_tts_preview(
+                generation,
+                "Không thể bắt đầu phát sau 12 giây. Hãy kiểm tra PipeWire/"
+                "PulseAudio và thiết bị đầu ra âm thanh.",
+            )
+        return GLib.SOURCE_REMOVE
+
+    def _release_tts_preview_pipeline(self) -> None:
+        if self._preview_start_timeout_id is not None:
+            GLib.source_remove(self._preview_start_timeout_id)
+            self._preview_start_timeout_id = None
+
+        pipeline, self._preview_pipeline = self._preview_pipeline, None
+        bus, self._preview_bus = self._preview_bus, None
+
+        if pipeline is not None:
+            try:
+                pipeline.set_state(Gst.State.NULL)
+            except Exception:
+                logger.exception("Failed to stop GStreamer preview pipeline")
+
+        if bus is not None:
+            try:
+                bus.remove_signal_watch()
+            except Exception:
+                logger.exception("Failed to remove GStreamer preview bus watch")
 
     def _finish_tts_preview(self, generation: int, message: str) -> None:
         if generation != self._preview_generation:
             return
         # Invalidate callbacks before clearing the stream, which can emit notifications.
         self._preview_generation += 1
-        media, self._preview_media = self._preview_media, None
+        self._release_tts_preview_pipeline()
         path, self._preview_path = self._preview_path, None
         self._preview_button = None
         stop_button, self._preview_stop_button = self._preview_stop_button, None
-        if media is not None:
-            try:
-                media.pause()
-                media.clear()
-            except Exception:
-                logger.exception("Failed to release local TTS preview media")
         if path is not None:
             path.unlink(missing_ok=True)
         if stop_button is not None:
@@ -1749,16 +1829,10 @@ class MainWindow(Gtk.ApplicationWindow):
             worker.cancel_current()
         self._preview_synthesizing = False
         self._preview_generation += 1
-        media, self._preview_media = self._preview_media, None
+        self._release_tts_preview_pipeline()
         path, self._preview_path = self._preview_path, None
         self._preview_button = None
         stop_button, self._preview_stop_button = self._preview_stop_button, None
-        if media is not None:
-            try:
-                media.pause()
-                media.clear()
-            except Exception:
-                logger.exception("Failed to stop local TTS preview")
         if path is not None:
             path.unlink(missing_ok=True)
         if stop_button is not None:
