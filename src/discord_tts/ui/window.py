@@ -408,7 +408,7 @@ class MainWindow(Gtk.ApplicationWindow):
         content.set_margin_start(14)
         content.set_margin_end(14)
         message = Gtk.Label(
-            label="Xóa toàn bộ lịch sử Conversation?\\nHành động này không thể hoàn tác."
+            label="Xóa toàn bộ lịch sử Conversation?\nHành động này không thể hoàn tác."
         )
         message.set_wrap(True)
         message.set_xalign(0)
