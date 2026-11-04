@@ -250,6 +250,7 @@ class PreviewWorker:
         self._reader_thread = None
 
         if process is not None:
+            process_id = process.pid
             if process.is_alive():
                 if not force and connection is not None:
                     try:
@@ -259,10 +260,10 @@ class PreviewWorker:
                     process.join(timeout=0.5)
                 if process.is_alive():
                     process.terminate()
-                    process.join(timeout=1.0)
+                    process.join(timeout=0.3)
                 if process.is_alive() and hasattr(process, "kill"):
                     process.kill()
-                    process.join(timeout=1.0)
+                    process.join(timeout=0.5)
             else:
                 process.join(timeout=0)
 
@@ -285,4 +286,4 @@ class PreviewWorker:
                     "Preview worker process did not exit cleanly (pid=%s)",
                     process.pid,
                 )
-            logger.info("Stopped preview worker process (pid=%s)", process.pid)
+            logger.info("Stopped preview worker process (pid=%s)", process_id)
