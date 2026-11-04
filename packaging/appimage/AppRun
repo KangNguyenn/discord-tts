@@ -31,7 +31,9 @@ cleanup_runtime_lock() {
         fi
     fi
 }
-trap cleanup_runtime_lock EXIT INT TERM
+trap cleanup_runtime_lock EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 if [[ ! -f "$READY_FILE" ]]; then
     mkdir -p -- "$CACHE_BASE"
