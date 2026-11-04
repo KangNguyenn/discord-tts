@@ -12,6 +12,7 @@ from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 
 from discord_tts.config import APP_NAME, AppConfig, VoiceProfile, VOICE_DIR
 from discord_tts.services.discord_service import DiscordService
+from discord_tts.services.preview_worker import PreviewWorker
 from discord_tts.storage.database import Database
 from discord_tts.tts.engine import PiperEngine
 
@@ -39,7 +40,12 @@ class MainWindow(Gtk.ApplicationWindow):
         self._preview_stop_button: Gtk.Button | None = None
         self._preview_status: Gtk.Label | None = None
         self._preview_buttons: list[Gtk.Button] = []
+        self._preview_worker: PreviewWorker | None = None
+        self._voice_picker_generation = 0
+        self._preview_request_id = 0
+        self._preview_synthesizing = False
         self._speech_busy = False
+        self._speech_busy_signal = threading.Event()
 
         self.set_size_request(560, 600)
         self._load_css()
@@ -754,23 +760,21 @@ class MainWindow(Gtk.ApplicationWindow):
             self.database.add_history("incoming", "discord", language, text)
         elif event == "speech_busy":
             self._speech_busy = True
-            for preview_button in self._preview_buttons:
-                preview_button.set_sensitive(False)
-            if self._preview_button is not None or self._preview_media is not None:
-                preview_status = self._preview_status
-                self._stop_tts_preview()
-                if preview_status is not None:
-                    preview_status.set_text(
-                        "Preview đã dừng vì bot đang xử lý TTS."
-                    )
+            preview_status = self._preview_status
+            self._stop_tts_preview()
+            self._preview_synthesizing = False
+            self._update_preview_buttons()
+            if preview_status is not None:
+                preview_status.set_text(
+                    "Preview đã dừng vì bot đang xử lý TTS."
+                )
             self.speaking_label.set_text("Đang xử lý TTS…")
         elif event == "speech_started":
             self.speaking_label.set_text("Đang nói…")
         elif event == "speech_idle":
             self._speech_busy = False
             self.speaking_label.set_text("")
-            for preview_button in self._preview_buttons:
-                preview_button.set_sensitive(preview_button is not self._preview_button)
+            self._update_preview_buttons()
         elif event in {"speech_finished", "speech_stopped", "speech_interrupted"}:
             if self._speech_busy:
                 self.speaking_label.set_text("Đang xử lý TTS…")
@@ -875,6 +879,15 @@ class MainWindow(Gtk.ApplicationWindow):
         self.discord.start(token)
 
     def _post_service_event(self, event: str, payload: dict) -> None:
+        # Apply speech priority before the event reaches GTK's main loop so a
+        # preview process cannot race a newly submitted Discord TTS request.
+        if event == "speech_busy":
+            self._speech_busy_signal.set()
+            worker = self._preview_worker
+            if worker is not None:
+                worker.stop_for_speech()
+        elif event == "speech_idle":
+            self._speech_busy_signal.clear()
         GLib.idle_add(self.handle_service_event, event, payload)
 
 
@@ -1192,7 +1205,17 @@ class MainWindow(Gtk.ApplicationWindow):
     def _open_voice_picker(
         self, _button: Gtk.Button, profile: VoiceProfile, on_save
     ) -> None:
+        if self._preview_worker is not None:
+            self._preview_worker.close()
         self._preview_buttons.clear()
+        self._preview_synthesizing = False
+        self._voice_picker_generation += 1
+        picker_generation = self._voice_picker_generation
+        self._preview_worker = PreviewWorker(
+            self.engine.voice_dir,
+            lambda result, generation=picker_generation:
+                self._post_preview_worker_result(generation, result),
+        )
         models = self.engine.list_models()
         draft = profile.copy()
         dialog = Gtk.Dialog(title="Chọn Voice Model", transient_for=self, modal=True)
@@ -1399,8 +1422,7 @@ class MainWindow(Gtk.ApplicationWindow):
         )
 
         def on_response(_dialog, response):
-            self._stop_tts_preview()
-            self._preview_buttons.clear()
+            self._close_voice_picker_resources(picker_generation)
             if response == Gtk.ResponseType.OK and selected_model["id"]:
                 model = self.engine.get_model(selected_model["id"])
                 if model:
@@ -1415,6 +1437,10 @@ class MainWindow(Gtk.ApplicationWindow):
             dialog.destroy()
 
         dialog.connect("response", on_response)
+        dialog.connect(
+            "close-request",
+            lambda *_args: (self._close_voice_picker_resources(picker_generation), False)[1],
+        )
         dialog.present()
 
     def _make_scale_row(
