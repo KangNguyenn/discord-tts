@@ -96,6 +96,8 @@ if flatpak list --user --runtime --columns=application,branch 2>/dev/null |
     sdk_was_installed=1
 else
     sdk_was_installed=0
+    log "Cài GNOME SDK $GNOME_SDK_BRANCH tạm thời để tạo dependency manifest..."
+    flatpak install --user --noninteractive flathub "$GNOME_SDK//$GNOME_SDK_BRANCH"
 fi
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/discord-tts-flatpak.XXXXXX")"
