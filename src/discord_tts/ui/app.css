@@ -59,6 +59,13 @@ window {
   padding: 4px 6px;
 }
 
+.quick-chat-editor {
+  border: 1px solid alpha(currentColor, 0.22);
+  border-radius: 8px;
+  padding: 8px;
+  background: alpha(@card_bg_color, 0.55);
+}
+
 .status-dot {
   border-radius: 999px;
   min-width: 8px;
